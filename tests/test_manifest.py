@@ -25,8 +25,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.ingestion.audit import build_audit_report
-from src.ingestion.manifest import assign_split, evaluate_conditional, leak_check
+from src.ingestion.audit import build_audit_report, no_box_only_stems
+from src.ingestion.manifest import assign_split, evaluate_conditional, leak_check, write_manifest
 
 # 9-bit windows stepped 5 bits apart: adjacent windows overlap 4 bits, so any
 # two of these hashes sit >= 10 bits apart — a genuinely disjoint set for
@@ -360,3 +360,72 @@ def test_build_audit_report_flags_no_class_when_all_above_30():
     report = build_audit_report(**inputs)
     assert "FLAG" not in report  # no class below 30 -> no collect-more flag
     assert "Kept after dedup: 40 (sanity band 1250-1450)" in report  # survivors len
+
+
+# ---------------------------------------------------------------------------
+# WR-03 reconciliation — verify-before-print on drifted data
+# ---------------------------------------------------------------------------
+
+
+def test_no_box_only_stems_counts_all_no_box_stems():
+    # WR-03 term: a stripped stem whose files are ALL no_box over-attributes
+    # (members - 1) file-level removals; mixed stems contribute 0.
+    roboflow = [
+        rec("roboflow_umpire_wide", "four", "keep",
+            relpath=f"train/images/frame_0001_jpg.rf.{'aa' * 16}.jpg"),
+        rec("roboflow_umpire_wide", None, "no_box",
+            relpath=f"train/images/frame_0001_jpg.rf.{'bb' * 16}.jpg"),
+        rec("roboflow_umpire_wide", None, "no_box",
+            relpath=f"train/images/frame_0002_jpg.rf.{'cc' * 16}.jpg"),
+        rec("roboflow_umpire_wide", None, "no_box",
+            relpath=f"test/images/frame_0002_jpg.rf.{'dd' * 16}.jpg"),
+    ]
+    assert no_box_only_stems(roboflow) == 1  # only frame_0002 is all-no_box
+
+
+def test_build_audit_report_reconciliation_corrected_for_all_no_box_stems():
+    # Drift case: two no_box files share a NEW all-no_box stem, so the plain
+    # pooled + no_box equation no longer holds — the corrected form with the
+    # all-no_box-stems term must render, never the false equation.
+    inputs = report_inputs()
+    inputs["records"] = inputs["records"] + [
+        rec("roboflow_umpire_wide", None, "no_box",
+            relpath=f"valid/images/frame_9000_jpg.rf.{'11' * 16}.jpg"),
+        rec("roboflow_umpire_wide", None, "no_box",
+            relpath=f"valid/images/frame_9000_jpg.rf.{'22' * 16}.jpg"),
+    ]
+    report = build_audit_report(**inputs)
+    assert "UNRECONCILED" not in report  # identity still holds in corrected form
+    assert "+ 4 zero-box copies - 1 all-no_box stems excluded before dedup" in report
+    assert "= 6 file-level" in report
+
+
+def test_build_audit_report_reconciliation_flags_unreconciled_pool():
+    # The identity is derived from the same records, so it can only break
+    # when the pooled removals disagree with the pool Layer A actually saw
+    # (a caller bug) — exactly the case the UNRECONCILED verdict exists for.
+    inputs = report_inputs()
+    inputs["stem_removed"] = inputs["stem_removed"][:2]  # 2 pooled, not 3
+    report = build_audit_report(**inputs)
+    assert "UNRECONCILED" in report and "investigate" in report
+    assert "reconciliation: 2 pooled copies removed by Layer A" not in report
+
+
+# ---------------------------------------------------------------------------
+# IN-06 — CSV formula-injection guard at the manifest sink
+# ---------------------------------------------------------------------------
+
+
+def test_write_manifest_sanitizes_formula_prefix_cells(tmp_path):
+    rows = [{
+        "row_id": "s_00000", "source": "s", "original_path": "datasets/s/x.jpg",
+        "family": "filename-label", "split0": "", "raw_label": '=HYPERLINK("http://x","y")',
+        "canonical_class": "Four", "crop_x0": "", "crop_y0": "", "crop_x1": "",
+        "crop_y1": "", "crop_path": "", "phash_hex": "0" * 16,
+        "split": "train", "conflict": False, "conflict_detail": "",
+    }]
+    out = tmp_path / "manifest.csv"
+    write_manifest(rows, out)
+    text = out.read_text(encoding="utf-8")
+    assert "'=HYPERLINK" in text  # formula-neutralized: renders as text
+    assert "s_00000" in text  # clean cells pass through untouched

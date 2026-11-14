@@ -44,6 +44,13 @@ def largest_box(boxes):
 
     Ties resolve to the lexicographically smallest tuple — order-independent
     and reproducible across runs (RESEARCH.md Pattern 4).
+
+    NOTE (IN-04): this helper is exercised by tests/test_crop_math.py only.
+    The pipeline's LIVE box selection — adapters._parse_label_boxes — uses a
+    different, equally deterministic tie rule: max(..., key=area) keeps the
+    FIRST row in file order on an area tie. The two rules must not be
+    swapped silently: flipping the pipeline's tie rule changes which box
+    wins on tied files and therefore the committed artifacts' bytes.
     """
     boxes = list(boxes)
     if not boxes:

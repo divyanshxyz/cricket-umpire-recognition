@@ -277,6 +277,11 @@ def _parse_label_boxes(lbl_path, names) -> tuple[tuple | None, str | None, bool]
             valid.append(((cx, cy, w, h), str(names[idx])))
     if not valid:
         return None, None, total_rows > 1
+    # Tie rule (IN-04): max(key=area) keeps the FIRST row in file order on an
+    # area tie — deterministic, and deliberately NOT crops.largest_box's
+    # lexicographic tie rule (that helper is tests-only). Swapping the
+    # implementations would flip winners on tied files and change the
+    # committed artifacts' bytes; change only via CONTEXT.
     box, box_class = max(valid, key=lambda item: item[0][2] * item[0][3])
     return box, box_class, total_rows > 1
 

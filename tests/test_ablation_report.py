@@ -35,6 +35,8 @@ training, no real artifacts. Pinned contracts:
 """
 
 import re
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -47,13 +49,14 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
-from src.models.data import canonical_classes, fit_label_encoder
+from src.models.data import canonical_classes, fit_label_encoder, sha256_of
 from src.train_ablation import (
     _ablation_report_text,
     _classification_report_text,
     _write_confusion_png,
     compute_verdict,
 )
+import src.train_ablation as ta
 
 LE = fit_label_encoder(canonical_classes())
 
@@ -403,3 +406,75 @@ def test_confusion_png_is_a_non_empty_two_by_two_grid(tmp_path, monkeypatch):
     path = tmp_path / "confusion_matrix.png"
     assert path.exists() and path.stat().st_size > 1000
     assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+# ---------------------------------------------------------------------------
+# (g) run_train_stage bookkeeping seam (WR-03/WR-04): produced_artifacts +
+#     artifact_sha256 actually LEAVE the train stage. Stub trainers — no
+#     heavy training here. (The live full runner caught this seam KeyError-
+#     ing after minutes of training; pinned so it can never regress.)
+# ---------------------------------------------------------------------------
+
+
+def test_run_train_stage_returns_produced_artifacts_and_sha256(tmp_path, monkeypatch):
+    # The train stage must RETURN the produced-artifact list it recorded
+    # (the eval stage threads it into the report writer — a dropped key is
+    # a live KeyError after training) and record each produced artifact's
+    # sha256 in the same-run meta (the WR-04 eval-side integrity gate
+    # verifies against exactly this digest).
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "classes.yaml").write_text(
+        "canonical_classes:\n"
+        "  - Four\n  - Six\n  - Out\n  - Wide\n  - NoBall\n  - NoAction\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "configs" / "paths.yaml").write_text(
+        "outputs:\n  manifest: data/processed/manifest.csv\n", encoding="utf-8"
+    )
+    (tmp_path / "data" / "processed").mkdir(parents=True)
+    (tmp_path / "data" / "processed" / "manifest.csv").write_text(
+        "row_id\n", encoding="utf-8"
+    )
+
+    real_npz = (
+        Path(__file__).resolve().parent.parent / "data" / "processed" / "features.npz"
+    )
+    if not real_npz.exists():
+        pytest.skip("frozen data/processed/features.npz not present")
+
+    def stub_trainer(X, y, le, models_dir, code_version, **kwargs):
+        (Path(models_dir) / "stub_artifact.bin").write_bytes(b"stub-artifact-bytes")
+        return {"stub": True}
+
+    stub = types.ModuleType("stub_models_fix")
+    stub.train_model_stub = stub_trainer
+    monkeypatch.setitem(sys.modules, "stub_models_fix", stub)
+    monkeypatch.setattr(
+        ta,
+        "MODEL_REGISTRY",
+        {
+            "S": {
+                "name": "stub model (WR-03/WR-04 seam test)",
+                "module": "stub_models_fix",
+                "train_fn": "train_model_stub",
+                "eval_fn": "eval_model_stub",
+                "artifact": "stub_artifact.bin",
+                "input": "raw",
+            }
+        },
+    )
+    # Non-"A" id -> the augmentation probe (real torch training) is skipped;
+    # MODULE_ORDER/REPO_ROOT stubs keep every write inside tmp_path.
+    monkeypatch.setattr(ta, "MODULE_ORDER", ("S",))
+    monkeypatch.setattr(ta, "REPO_ROOT", tmp_path)
+
+    result = ta.run_train_stage(real_npz, ["S"])
+    assert result["produced_artifacts"] == [
+        "label_encoder.joblib",
+        "stub_artifact.bin",
+    ]
+    models_dir = tmp_path / "models"
+    assert (models_dir / "stub_artifact.bin").exists()
+    assert result["meta_by_model"]["S"]["artifact_sha256"] == sha256_of(
+        models_dir / "stub_artifact.bin"
+    )

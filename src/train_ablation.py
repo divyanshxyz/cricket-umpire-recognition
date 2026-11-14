@@ -531,7 +531,12 @@ def run_train_stage(npz_path, selected) -> dict:
             "metrics render in the separated probe section, never in the "
             "main table)"
         )
-    return {"digest": digest, "meta_by_model": meta_by_model, "n_train": n_train}
+    return {
+        "digest": digest,
+        "meta_by_model": meta_by_model,
+        "n_train": n_train,
+        "produced_artifacts": produced_artifacts,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ min_class_split: 10
 imagehash version: 4.3.2
 Pillow version: 13.0.0
 scipy version: 1.18.1
-code version: phase1-plan03-r1
+code version: phase1-plan03-r2
 
 ## Per-source census
 
@@ -40,7 +40,7 @@ Manifest class rows (post conditional evaluation): 421
 Duplicates removed - Roboflow stem-groups: 1939
   roboflow_umpire_wide: 1939 (file-level: 2497 files from 558 stems)
   umpire_gestures: 0 (file-level: 145 files from 145 stems)
-  reconciliation: 1937 pooled copies removed by Layer A + 2 zero-box copies excluded as no_box before dedup (counted above) = 1939 file-level
+  reconciliation: 1937 pooled copies removed by Layer A + 2 zero-box copies excluded as no_box before dedup (counted above) + 32 excluded-as-class copies excluded before dedup (counted above) - 32 all-non-pool stems = 1939 file-level
 Stem groups whose copies disagreed on raw_label: 298 (Layer A resolves by sort order — no conflict flag, unlike Layer B; not part of the conflict count below)
 Duplicates removed - phash near-duplicates: 1719
   archive: 390
@@ -68,7 +68,7 @@ LegBye: 13 excluded (conditional class, usable count 13 is not > 30)
 ## Crop rule (research-driven adjustment, logged explicitly)
 
 bbox rows seen by class: DRS 32, LegBye 13, NoBall 48, WideBall 52, four 798, no_action 926, out 259, six 283, umpire 1, wide 250 (total 2662)
-umpire-class bbox rows seen: 1 — logged explicitly; the umpire annotation class has 1 bbox row across the 2,497-image export because boxes carry the signal class (the umpire performing it)
+umpire-class bbox rows in roboflow_umpire_wide (the crop-rule export): 1 — logged explicitly; the umpire annotation class has 1 bbox row across the 2,497-image export because boxes carry the signal class (the umpire performing it)
 Adjustment note: the CONTEXT decision 'when multiple umpire boxes exist, crop the largest-area umpire box' was unimplementable as written — the umpire class has 1 bbox row across 2,497 images. Operative rule: crop the largest-area annotated box of ANY class (every box denotes the umpire); the row's canonical class = that box's class. Intent preserved: every Roboflow image still yields the umpire crop with 15% clamped padding.
 
 Label conflicts resolved (tier priority, majority at equal tier, lexicographic tiebreak): 106

@@ -18,6 +18,10 @@ training, no real artifacts. Pinned contracts:
   24-usable < 30 flag) and the single-seed caveat all render; the
   augmentation probe renders in its own separated section and NEVER as a
   main-table row.
+- Partial --models runs (WR-02): an UNMEASURED baseline comparison
+  renders the explicit "n/a — not measured in this run (partial --models
+  run)" line — never a fabricated NO / NOT MET for a model that was
+  never evaluated this run.
 - Determinism: no rendered line matches a wall-clock date
   (\\d{4}-\\d{2}-\\d{2}) — the features_build.md posture.
 - Lineage: the four canonical artifact sha256 lines render in the
@@ -208,6 +212,55 @@ def test_beats_baseline_false_when_equal_macro_f1():
     assert v["beats_baseline"] is False
     text = _render({"A": a, "B": b}, verdict=v)
     assert "Beats baseline (Model A): NO" in text
+
+
+# ---------------------------------------------------------------------------
+# (d2) Partial --models runs: unmeasured comparisons render honest n/a (WR-02)
+# ---------------------------------------------------------------------------
+
+
+def test_partial_run_without_model_a_renders_na_never_fabricated_negative():
+    # WR-02: a partial --models run (e.g. --models B — Model A not
+    # evaluated) must NOT render "NO"/"NOT MET" for a comparison that was
+    # never measured: the verdict stays None and the report says so
+    # explicitly, naming the partial run.
+    metrics = {"B": _synth_metrics(1)}
+    v = compute_verdict(metrics)
+    assert v["best_id"] == "B"
+    assert v["baseline_f1"] is None
+    assert v["beats_baseline"] is None
+    assert v["target_met"] is None
+    text = _render(metrics, verdict=v)
+    assert (
+        "Beats baseline (Model A): n/a — not measured in this run "
+        "(partial --models run: Model A was not evaluated)" in text
+    )
+    assert "Beats baseline (Model A): NO" not in text
+    assert "macro-F1 >= 0.90 target: NOT MET" not in text
+    assert "macro-F1 >= 0.90 target: MET" not in text
+    assert (
+        "macro-F1 >= 0.90 target: n/a — not measured in this run" in text
+    )
+
+
+def test_partial_run_without_any_model_renders_na_for_every_line():
+    # WR-02 counterpart: neither the baseline nor any proposed model was
+    # evaluated -> every verdict line is the explicit unmeasured n/a.
+    v = compute_verdict({})
+    assert v["best_id"] is None
+    assert v["beats_baseline"] is None
+    assert v["target_met"] is None
+    text = _render({}, verdict=v)
+    assert (
+        "Best proposed model: n/a (no proposed model (B/C/D) was "
+        "evaluated this run)" in text
+    )
+    assert (
+        "Beats baseline (Model A): n/a — not measured in this run "
+        "(partial --models run: no proposed model (B/C/D) was evaluated "
+        "either)" in text
+    )
+    assert "Beats baseline (Model A): NO" not in text
 
 
 def test_probe_renders_in_its_own_section_never_in_the_table():

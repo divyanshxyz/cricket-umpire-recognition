@@ -107,7 +107,12 @@ from src.models.data import (
 # C's weights stored inside), so the guarded eval votes over the exact
 # reported members; the param block gains the grid best-params/best-score
 # lines and the ensemble bundle sha256.
-CODE_VERSION = "phase3-plan01-r3"
+# r4: review-fix behavior change (WR-02) — compute_verdict keeps an
+# unmeasured baseline comparison None on partial --models runs (Model A or
+# every proposed model not evaluated) so the verdict section renders the
+# honest "n/a — not measured in this run (partial --models run)" line
+# instead of a fabricated NO / NOT MET.
+CODE_VERSION = "phase3-plan01-r4"
 
 SEED = 42
 
@@ -276,10 +281,13 @@ def compute_verdict(metrics_by_model) -> dict:
 
     Returns {"best_id", "best_f1", "baseline_f1", "beats_baseline",
     "target_met"}; None values mean the honest n/a renders (e.g. a partial
-    --models run). beats_baseline is a STRICT > (an exact tie with the
-    baseline is not a beat); target_met = beats_baseline AND
-    best_f1 >= TARGET_MACRO_F1 (the pre-registered bar combines both —
-    reported as measured, never tuned toward)."""
+    --models run) — an UNMEASURED comparison stays None (beats_baseline /
+    target_met are None whenever Model A, or every proposed model, was not
+    evaluated this run), never a fabricated negative (WR-02).
+    beats_baseline is a STRICT > (an exact tie with the baseline is not a
+    beat); target_met = beats_baseline AND best_f1 >= TARGET_MACRO_F1 (the
+    pre-registered bar combines both — reported as measured, never tuned
+    toward)."""
     best_id = None
     best_f1 = None
     for model_id in PROPOSED_ORDER:
@@ -295,8 +303,15 @@ def compute_verdict(metrics_by_model) -> dict:
         beats_baseline = None
         target_met = None
     else:
-        beats_baseline = baseline_f1 is not None and best_f1 > baseline_f1
-        target_met = bool(beats_baseline) and best_f1 >= TARGET_MACRO_F1
+        # WR-02: "Model A was not measured this run" is NOT "did not beat
+        # the baseline" — an unmeasured comparison stays None so the
+        # renderer prints the honest n/a line instead of a fabricated
+        # NO / NOT MET (partial --models runs, e.g. --models B).
+        beats_baseline = None if baseline_f1 is None else best_f1 > baseline_f1
+        target_met = (
+            None if beats_baseline is None
+            else bool(beats_baseline) and best_f1 >= TARGET_MACRO_F1
+        )
     return {
         "best_id": best_id,
         "best_f1": best_f1,
@@ -774,21 +789,39 @@ def _ablation_report_text(census, metrics_by_model, meta_by_model,
         "order (explicit ordered scan over the fixed tuple — never "
         "np.argmax over a reordered collection)."
     )
+    # WR-02: an unmeasured comparison renders as an explicit "n/a — not
+    # measured in this run" line naming the partial --models run — never a
+    # fabricated NO / NOT MET for a model that was never evaluated.
     if verdict["beats_baseline"] is None:
-        lines.append(
-            "Beats baseline (Model A): n/a (Model A or no proposed model "
-            "evaluated this run)"
-        )
+        if verdict["best_id"] is None:
+            lines.append(
+                "Beats baseline (Model A): n/a — not measured in this run "
+                "(partial --models run: no proposed model (B/C/D) was "
+                "evaluated either)"
+            )
+        else:
+            lines.append(
+                "Beats baseline (Model A): n/a — not measured in this run "
+                "(partial --models run: Model A was not evaluated)"
+            )
     else:
         lines.append(
             "Beats baseline (Model A): "
             + ("YES" if verdict["beats_baseline"] else "NO")
         )
     if verdict["target_met"] is None:
-        lines.append(
-            "macro-F1 >= 0.90 target: n/a (no proposed model evaluated "
-            "this run)"
-        )
+        if verdict["best_id"] is None:
+            lines.append(
+                "macro-F1 >= 0.90 target: n/a — not measured in this run "
+                "(partial --models run: no proposed model (B/C/D) was "
+                "evaluated)"
+            )
+        else:
+            lines.append(
+                "macro-F1 >= 0.90 target: n/a — not measured in this run "
+                "(partial --models run: Model A was not evaluated, so the "
+                "beats-baseline conjunct is unmeasured)"
+            )
     else:
         lines.append(
             "macro-F1 >= 0.90 target: "

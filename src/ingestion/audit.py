@@ -99,6 +99,18 @@ def build_console_summary(source_rows, records, survivors, removed,
     lines.append(
         f"Duplicates removed — Layer A Roboflow stem groups (.rf source-frame ID): {len(stem_removed)}"
     )
+    roboflow_parsed = [r for r in records if r.family == "roboflow-yolo"]
+    if roboflow_parsed:
+        roboflow_stems = len({
+            (r.source, roboflow_stem(r.relpath)) for r in roboflow_parsed
+        })
+        file_level = len(roboflow_parsed) - roboflow_stems
+        if file_level != len(stem_removed):
+            lines.append(
+                f"  (file-level stem-copy removals: {file_level} = {len(stem_removed)} "
+                f"pooled + {file_level - len(stem_removed)} no_box copies excluded "
+                "before dedup — reconciled in reports/dedup_audit.md)"
+            )
     for src in sorted(stem_by_source):
         lines.append(f"  {src}: {stem_by_source[src]}")
     lines.append(
@@ -298,19 +310,52 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
     lines.append(f"Manifest class rows (post conditional evaluation): {len(rows)}")
 
     # Duplicates removed — two layers, separate lines (Pitfall 1: stem-dup
-    # and phash-dup removals must never be merged into one number).
+    # and phash-dup removals must never be merged into one number). The
+    # stem-groups line reports FILE-level copy removals (every parsed
+    # Roboflow file beyond its stem group's surviving keeper) so it
+    # reconciles with the RESEARCH.md census (2497 files / 558 stems =
+    # 1939): the dedup pool is keep/conditional only (Plan 01 locked
+    # decision), so the zero-box records exit at the canonical stage before
+    # Layer A runs. The reconciliation is rendered explicitly — nothing is
+    # double-counted silently.
     lines.append("")
     lines.append("## Duplicates removed")
     lines.append("")
     stem_removed = stem_removed or []
-    lines.append(f"Duplicates removed - Roboflow stem-groups: {len(stem_removed)}")
-    stem_by_source = Counter(r.source for r in stem_removed)
-    for src in sorted(stem_by_source):
-        lines.append(f"  {src}: {stem_by_source[src]}")
+    roboflow_records = [r for r in records if r.family == "roboflow-yolo"]
+    roboflow_stem_keys = {
+        (r.source, roboflow_stem(r.relpath)) for r in roboflow_records
+    }
+    file_level_stem = len(roboflow_records) - len(roboflow_stem_keys)
+    no_box_roboflow = sum(
+        1 for r in roboflow_records if r.outcome == "no_box"
+    )
+    lines.append(f"Duplicates removed - Roboflow stem-groups: {file_level_stem}")
+    for src in sorted({k[0] for k in roboflow_stem_keys}):
+        src_files = sum(1 for r in roboflow_records if r.source == src)
+        src_stems = sum(1 for k in roboflow_stem_keys if k[0] == src)
+        lines.append(
+            f"  {src}: {src_files - src_stems} (file-level: {src_files} files "
+            f"from {src_stems} stems)"
+        )
+    pooled_stem = len(stem_removed)
+    if file_level_stem != pooled_stem:
+        lines.append(
+            f"  reconciliation: {pooled_stem} pooled copies removed by Layer A "
+            f"+ {no_box_roboflow} zero-box copies excluded as no_box before "
+            f"dedup (counted above) = {file_level_stem} file-level"
+        )
     lines.append(f"Duplicates removed - phash near-duplicates: {len(removed)}")
     removed_by_source = Counter(r.source for r in removed)
     for src in sorted(removed_by_source):
         lines.append(f"  {src}: {removed_by_source[src]}")
+    lines.append(
+        "  (Layer B is union-find over EVERY pair at Hamming <= threshold: "
+        "near-identical sequences chain transitively — the export's video frames "
+        "include distinct stems with identical 64-bit hashes, so long runs merge "
+        "into single clusters. This is the locked CONTEXT policy (threshold 8) "
+        "operating on real data; the sanity-band verdict above reports the result.)"
+    )
 
     # Exclusions — every exclusion counted, never silent (RESEARCH.md
     # anti-pattern; INGEST-06's exclusion behavior is itself an audit deliverable).

@@ -193,10 +193,11 @@ def srow(name, count, family, classes=()):
     }
 
 
-def rec(source, raw_label, outcome, multibox=False):
+def rec(source, raw_label, outcome, multibox=False, relpath=None):
     return SimpleNamespace(
-        source=source, relpath=f"{source}/{raw_label}_{source}.jpg",
-        family="filename-label", priority=1, raw_label=raw_label,
+        source=source, relpath=relpath or f"{source}/{raw_label}_{source}.jpg",
+        family="roboflow-yolo" if source == "roboflow_umpire_wide" else "filename-label",
+        priority=3 if source == "roboflow_umpire_wide" else 1, raw_label=raw_label,
         outcome=outcome, canonical=None, multibox=multibox,
         conflict=False, conflict_detail="",
     )
@@ -217,18 +218,38 @@ def report_inputs():
              ["no_action", "no_ball", "non_umpire", "out", "sixes", "umpire", "wide"]),
         srow("umpire_pose_dataset.csv", 2909, "precomputed-csv"),
     ]
+    # Roboflow records exercise the file-level stem accounting: 21 four
+    # keepers where the first 6 form 3 stem pairs (18 unique keeper stems ->
+    # 3 pooled Layer A removals) and both no_box copies share the first
+    # keeper stem (excluded before dedup) -> 23 roboflow files over 18
+    # stems = 5 file-level stem-copy removals = 3 pooled + 2 no_box, so the
+    # report's reconciliation equation is arithmetically consistent.
+    roboflow_records = []
+    for i in range(21):
+        stem = i // 2 if i < 6 else i - 3
+        roboflow_records.append(rec(
+            "roboflow_umpire_wide", "four", "keep", multibox=True,
+            relpath=f"train/images/frame_{stem:04d}_jpg.rf.{'ab' * 16}.jpg",
+        ))
+    roboflow_records.append(rec(
+        "roboflow_umpire_wide", None, "no_box",
+        relpath=f"train/images/frame_0000_jpg.rf.{'cd' * 16}.jpg",
+    ))
+    roboflow_records.append(rec(
+        "roboflow_umpire_wide", None, "no_box",
+        relpath=f"train/images/frame_0000_jpg.rf.{'ef' * 16}.jpg",
+    ))
     records = (
         [rec("umpire_gestures", "DRS", "excluded") for _ in range(32)]
         + [rec("inception", "umpire", "excluded") for _ in range(24)]
         + [rec("inception", "non_umpire", "excluded") for _ in range(21)]
         + [rec("umpire_gestures", "LegBye", "conditional") for _ in range(13)]
-        + [rec("roboflow_umpire_wide", None, "no_box") for _ in range(2)]
-        + [rec("roboflow_umpire_wide", "four", "keep", multibox=True) for _ in range(21)]
+        + roboflow_records
         + [rec("archive", "no_action", "keep") for _ in range(20)]
     )
     survivors = [rec("archive", "no_action", "keep") for _ in range(40)]
     removed = [rec("archive3", "no_action", "keep") for _ in range(7)]
-    stem_removed = [rec("roboflow_umpire_wide", "four", "keep") for _ in range(5)]
+    stem_removed = [rec("roboflow_umpire_wide", "four", "keep") for _ in range(3)]
     rows = make_rows({c: 12 for c in ("Four", "Six", "Out", "Wide", "NoBall", "NoAction")})
     assign_split(rows, 0.2, 42, 10)
     rows[0]["conflict"] = True
@@ -264,8 +285,11 @@ def test_build_audit_report_renders_full_contract():
     # Totals with the sanity band (RESEARCH.md census + dedup expectations).
     assert "Raw image files: 4577" in report
     assert "Kept after dedup: 40 (sanity band 1250-1450)" in report
-    # Dedup lines — separate (Pitfall 1).
+    # Dedup lines — separate (Pitfall 1); stem-groups at file level with the
+    # explicit pooled + no_box reconciliation.
     assert "Duplicates removed - Roboflow stem-groups: 5" in report
+    assert "reconciliation: 3 pooled copies removed by Layer A" in report
+    assert "= 5 file-level" in report
     assert "Duplicates removed - phash near-duplicates: 7" in report
     # Exclusions counted explicitly, never silent.
     assert "DRS: 32 excluded" in report

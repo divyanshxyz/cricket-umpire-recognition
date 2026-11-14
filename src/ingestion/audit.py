@@ -325,7 +325,10 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
         imagehash_version = "unknown"
     for key in ("phash_threshold", "pad_frac", "test_size", "random_state",
                 "min_class_flag", "min_class_split"):
-        lines.append(f"{key}: {params.get(key, '')}")
+        # IN-R2-01: fall back to DEFAULT_PARAMS like the threshold lookups
+        # above — a direct caller with incomplete params must render the
+        # pipeline's actual default, never a misleading blank cell.
+        lines.append(f"{key}: {params.get(key, DEFAULT_PARAMS[key])}")
     lines.append(f"imagehash version: {imagehash_version}")
     # IN-08: Pillow and scipy are determinism-relevant (phash depends on
     # Pillow's resize and scipy's DCT behavior) — record their installed

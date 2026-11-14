@@ -1,0 +1,20 @@
+# Inference engine config for Phase 4 (video analyzer -> stabilizer ->
+# scoreboard). Values are the locked REQUIREMENTS-literal defaults: NO
+# validation-video tuning was performed (no video dataset exists — PROJECT.md
+# Out-of-Scope), so the spec'd literals ARE the defaults and every parameter
+# stays config-tunable without rework. INFERENCE_DEFAULTS in
+# src/inference/config.py is the merged single source (IN-02); the loaders
+# validate every key fail-closed.
+
+params:
+  model: image               # P2RDY-02 switch — only image | temporal are valid (fail-closed enum)
+  device: cpu                # locked CONTEXT decision; code stays device-agnostic (Phase 2 precedent)
+  stride: 2                  # VIDEO-01 literal: process every 2nd frame; skipped frames pass through unannotated
+  window: 12                 # VIDEO-02 rolling-window deque maxlen
+  alpha: 0.3                 # VIDEO-02 EMA blend: s_t = alpha*x_t + (1-alpha)*s_{t-1}, s_0 = x_0
+  threshold: 0.75            # VIDEO-03 fire threshold: max prob (excluding NoAction) >= 0.75
+  fire_frac: 0.60            # VIDEO-03 window fraction: >= 60% of the window qualifies to fire (len(window) denominator)
+  cooldown_seconds: 4.0      # VIDEO-04 cooldown = 4 x fps frames in ORIGINAL frame-index space
+  fps_fallback: 30.0         # documented fallback when CAP_PROP_FPS is 0/missing (typed fps_fallback event, never silent)
+  require_release: true      # OQ1 adopted: release-based re-arm (one held gesture = one event); set false for spec-literal cooldown-only re-arm
+  max_frames: 100000         # typed-abort DoS guard for the headless CLI (T-04-06 mitigation)

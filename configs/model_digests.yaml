@@ -1,0 +1,24 @@
+# Integrity-bound artifact digests (Phase 3 WR-04 contract). Source of truth:
+# reports/ablation_study.md param block, frozen at CODE_VERSION phase3-plan01-r4.
+# Phase 4 verifies every artifact against this file BEFORE any
+# torch.load/joblib.load (verify_artifact_sha256; expected_sha256=None is
+# never passed). The fifth entry (pose_weights) is the ADOPTED digest: the
+# ultralytics pose weights are part of every deserialization surface (Phase 2
+# STATE decision — every load in the phase is integrity-bound).
+
+artifacts:
+  baseline_ann:
+    path: models/baseline_ann.pt
+    sha256: "5f1a595ede3b94e5ae04d4b8561aa67d7079b6b80d68ea8db05ce00d8114d5ae"  # ablation_study.md:65
+  pose_mlp:
+    path: models/pose_mlp.pt
+    sha256: "6a1c4e7e35e2efbe83865bbe62a6ace89242275b4bb4c0a193fd2df990442962"  # ablation_study.md:66
+  ensemble_model:
+    path: models/ensemble_model.joblib
+    sha256: "12c84a36bc574ce62da96bc6b09aa864c97bfdbc596169eaa1ece070b155562f"  # ablation_study.md:67
+  label_encoder:
+    path: models/label_encoder.joblib
+    sha256: "b439eff2f6effdcdf056481243d1b9bd448d97b2a1eb9d16bedccce2b7fa8a0f"  # ablation_study.md:68
+  pose_weights:
+    path: models/yolov8n-pose.pt
+    sha256: "c6fa93dd1ee4a2c18c900a45c1d864a1c6f7aba75d84f91648a30b7fb641d212"  # Phase 2 STATE decision — every deserialization surface incl. the pose weights is integrity-bound

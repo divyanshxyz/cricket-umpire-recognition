@@ -24,8 +24,11 @@ training, no real artifacts. Pinned contracts:
   never evaluated this run.
 - Determinism: no rendered line matches a wall-clock date
   (\\d{4}-\\d{2}-\\d{2}) — the features_build.md posture.
-- Lineage: the four canonical artifact sha256 lines render in the
-  tracked report (artifacts are gitignored; hashes are the provenance).
+- Lineage (WR-03): the artifact sha256 lines render in the tracked
+  report ONLY for artifacts the train stage actually produced this run —
+  a stale leftover under models/ from an earlier run renders no line
+  rather than a lie (artifacts are gitignored; hashes are the
+  provenance).
 - classification_report.txt: one section per evaluated model in fixed
   order, explicit not-trained markers for the rest; confusion_matrix.png
   is a non-empty 2x2-subplot grid (matplotlib Agg).
@@ -101,12 +104,14 @@ def _synth_lineage() -> dict:
     }
 
 
-def _render(metrics, meta=None, probe=None, verdict=None, models_dir=None):
+def _render(metrics, meta=None, probe=None, verdict=None, models_dir=None,
+            produced_artifacts=None):
     return _ablation_report_text(
         _synth_census(), metrics, meta or {}, probe,
         verdict if verdict is not None else compute_verdict(metrics),
         334, LE, _synth_lineage(),
         models_dir if models_dir is not None else Path("."),
+        produced_artifacts,
     )
 
 
@@ -318,15 +323,49 @@ def test_report_renders_no_wall_clock_timestamps():
 # ---------------------------------------------------------------------------
 
 
-def test_artifact_sha256_lines_render_for_existing_artifacts(tmp_path):
-    for name in ("baseline_ann.pt", "pose_mlp.pt", "ensemble_model.joblib",
-                 "label_encoder.joblib"):
+def test_artifact_sha256_lines_render_for_produced_artifacts(tmp_path):
+    # WR-03 contract: the param block's sha256 provenance renders ONLY the
+    # artifacts the train stage actually produced this run (full-run shape:
+    # all four canonical TRAIN-08 files were produced and render in
+    # canonical order).
+    produced = ["baseline_ann.pt", "pose_mlp.pt", "ensemble_model.joblib",
+                "label_encoder.joblib"]
+    for name in produced:
         (tmp_path / name).write_bytes(b"artifact-bytes-" + name.encode())
     metrics = {"A": _synth_metrics(0), "B": _synth_metrics(1),
                "D": _synth_metrics(2)}
-    text = _render(metrics, models_dir=tmp_path)
+    text = _render(metrics, models_dir=tmp_path, produced_artifacts=produced)
     for art in ("baseline_ann", "pose_mlp", "ensemble_model", "label_encoder"):
         assert re.search(rf"^{art} sha256: [0-9a-f]{{64}}", text, re.M), art
+
+
+def test_stale_artifact_renders_no_sha256_line(tmp_path):
+    # WR-03: a stale leftover under models/ from an EARLIER run (here:
+    # ensemble_model.joblib on a run that trained A/B but never D —
+    # MODULE_ORDER trains C before D, so the bundle can only be stale at
+    # C's print time) renders NO sha256 line rather than a lie, while the
+    # artifacts this run DID produce still render.
+    for name in ("baseline_ann.pt", "pose_mlp.pt", "ensemble_model.joblib"):
+        (tmp_path / name).write_bytes(b"stale-or-produced-" + name.encode())
+    metrics = {"A": _synth_metrics(0), "B": _synth_metrics(1)}
+    text = _render(
+        metrics,
+        models_dir=tmp_path,
+        produced_artifacts=["baseline_ann.pt", "pose_mlp.pt"],
+    )
+    assert re.search(r"^baseline_ann sha256: [0-9a-f]{64}", text, re.M)
+    assert re.search(r"^pose_mlp sha256: [0-9a-f]{64}", text, re.M)
+    assert "ensemble_model sha256:" not in text
+    # Nothing recorded as produced -> no artifact sha256 line at all
+    # (honest unknown, never a possibly-stale claim).
+    text_none = _render(metrics, models_dir=tmp_path, produced_artifacts=None)
+    art_lines = [
+        ln for ln in text_none.splitlines()
+        if re.match(
+            r"^(baseline_ann|pose_mlp|ensemble_model|label_encoder) sha256:", ln
+        )
+    ]
+    assert art_lines == []
 
 
 # ---------------------------------------------------------------------------

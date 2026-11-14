@@ -111,7 +111,10 @@ from src.models.data import (
 # unmeasured baseline comparison None on partial --models runs (Model A or
 # every proposed model not evaluated) so the verdict section renders the
 # honest "n/a — not measured in this run (partial --models run)" line
-# instead of a fabricated NO / NOT MET.
+# instead of a fabricated NO / NOT MET. Plus (WR-03) Model C's registry
+# row carries "artifact": None (the bundle is Model D's write — no false
+# "wrote" console line on partial runs) and the param block's artifact
+# sha256 provenance renders only artifacts actually produced by THIS run.
 CODE_VERSION = "phase3-plan01-r4"
 
 SEED = 42
@@ -144,7 +147,14 @@ MODEL_REGISTRY = {
         "module": "src.models.pose_mlp",
         "train_fn": "train_model_c",
         "eval_fn": "eval_model_c",
-        "artifact": "ensemble_model.joblib",
+        # WR-03: Model C has NO standalone artifact — its weights ride the
+        # train-stage meta and are persisted INSIDE the ensemble bundle by
+        # Model D's train stage. Because MODULE_ORDER trains C before D,
+        # models/ensemble_model.joblib can only exist at C's print time as
+        # a STALE leftover from a previous run — never a C write. The None
+        # marker keeps the train-stage print honest (no false "wrote"
+        # line) and keeps the bundle out of C's artifact provenance.
+        "artifact": None,
         "input": "eng",
     },
     "D": {
@@ -400,7 +410,11 @@ def run_train_stage(npz_path, selected) -> dict:
     models/label_encoder.joblib ({"encoder", "source"} per RESEARCH
     Pattern 4). Each model's train input is resolved by its registry
     "input" kind (Model A: features_raw; B: features_eng[:, 0:51]; C:
-    features_eng). Returns {"digest", "meta_by_model", "n_train"}."""
+    features_eng). Returns {"digest", "meta_by_model", "n_train",
+    "produced_artifacts"} — the last carries the file names actually
+    written by THIS run (shared encoder + each selected model's registry
+    artifact), which the report's sha256 provenance is restricted to
+    (WR-03: stale leftovers from earlier runs render no line)."""
     seed_everything(SEED)
     digest = test_slice_digest(npz_path)
     manifest_path = REPO_ROOT / str(_paths_cfg()["outputs"]["manifest"])
@@ -418,10 +432,17 @@ def run_train_stage(npz_path, selected) -> dict:
     y_int = le.transform(arrays["labels"][train_idx])
     n_train = int(train_idx.size)
 
+    # Artifacts actually produced by THIS run (WR-03): the shared encoder
+    # is written unconditionally below; each selected model appends its
+    # own artifact when its trainer just wrote it. The report's sha256
+    # provenance renders ONLY these — a stale leftover under models/ from
+    # an earlier run renders no line rather than a lie.
+    produced_artifacts: list = []
     models_dir = REPO_ROOT / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
     encoder_path = models_dir / "label_encoder.joblib"
     joblib.dump({"encoder": le, "source": "configs/classes.yaml"}, encoder_path)
+    produced_artifacts.append("label_encoder.joblib")
     print(
         f"[ablation] wrote models/label_encoder.joblib (shared encoder, "
         "source configs/classes.yaml)"
@@ -444,18 +465,31 @@ def run_train_stage(npz_path, selected) -> dict:
         meta_by_model[model_id] = trainer(
             X_model, y_int, le, models_dir, CODE_VERSION, **train_kwargs
         )
-        artifact_path = models_dir / spec["artifact"]
-        if artifact_path.exists():
+        # WR-03 bookkeeping: only a registry row WITH an artifact name can
+        # have written one just now — each train fn saves before returning,
+        # so a file existing at this moment was produced by THIS run. A
+        # stale leftover can never be claimed: Model C's row carries
+        # "artifact": None, so the D-owned bundle is never reported as a
+        # C write.
+        artifact_name = spec.get("artifact")
+        if artifact_name is not None and (models_dir / artifact_name).exists():
+            produced_artifacts.append(artifact_name)
             print(
-                f"[ablation] wrote models/{spec['artifact']} "
+                f"[ablation] wrote models/{artifact_name} "
                 f"(Model {model_id} trained)"
             )
         elif model_id == "C":
+            deferred = (
+                "written later in this run by the Model D train stage"
+                if "D" in selected
+                else "deferred to the Model D stage — NOT written by this "
+                     "run (Model D was not selected)"
+            )
             print(
                 f"[ablation] Model C trained — no standalone artifact (its "
                 "weights ride the train-stage meta and are handed to the "
                 "eval stage in-memory; models/ensemble_model.joblib is "
-                "written when Model D trains in the same run)"
+                f"{deferred})"
             )
         else:
             print(
@@ -511,11 +545,18 @@ def assert_test_slice_unchanged(npz_path, expected_digest: str) -> None:
 
 
 def evaluate_and_report(npz_path, expected_digest: str, selected, meta_by_model,
-                        n_train: int, models_dir=None, reports_dir=None) -> dict:
+                        n_train: int, models_dir=None, reports_dir=None,
+                        produced_artifacts=None) -> dict:
     """The guarded eval stage: assert the digest, load the test slice
     exactly ONCE, evaluate every selected registered model on the
     IDENTICAL held-out arrays in fixed MODULE_ORDER, write the three
     report artifacts, print everything (INGEST-07).
+
+    ``produced_artifacts`` (WR-03) threads the train stage's list of file
+    names actually written by THIS run into the report writer — the param
+    block's artifact sha256 provenance renders ONLY those (a stale
+    leftover under models/ from an earlier run renders no line rather
+    than a lie). None (no recorded provenance) renders no artifact lines.
 
     Predictions come from proba.argmax(axis=1) — numpy's deterministic
     first-index tie-break (TRAIN-03/precision backstop); the eval never
@@ -624,7 +665,7 @@ def evaluate_and_report(npz_path, expected_digest: str, selected, meta_by_model,
     }
     report_text = _ablation_report_text(
         census, metrics_by_model, meta_by_model, probe_metrics, verdict,
-        n_train, le, lineage, models_dir,
+        n_train, le, lineage, models_dir, produced_artifacts,
     )
     report_path = reports_dir / "ablation_study.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -653,19 +694,24 @@ def evaluate_and_report(npz_path, expected_digest: str, selected, meta_by_model,
 
 def _ablation_report_text(census, metrics_by_model, meta_by_model,
                           probe_metrics, verdict, n_train, le, lineage,
-                          models_dir) -> str:
+                          models_dir, produced_artifacts=None) -> str:
     """reports/ablation_study.md — provenance lineage, counts +
     augmentation census, the ablation table (fixed A-D order), the
     separated augmentation-probe section, the plainly-stated verdict
     lines (best proposed + stated tie-break rule, beats-baseline, 0.90
     target), the caveat block (Four n=5 + single seed), and the completed
-    param block (seed, threads, versions, sha256 lineage incl. the four
-    artifact hashes, CV + grid hyperparameters, code version). NO
-    wall-clock timestamps, NO datetime calls — byte-identical re-runs at
-    the param-text level (artifact sha256s reflect artifact bytes, the
-    features_build.md posture). ``lineage`` carries the precomputed
-    features.npz/manifest sha256s, the test-slice digest, and the torch
-    thread count so this writer stays pure (weight-free testable)."""
+    param block (seed, threads, versions, sha256 lineage incl. the
+    artifacts actually produced by THIS run, CV + grid hyperparameters,
+    code version). NO wall-clock timestamps, NO datetime calls —
+    byte-identical re-runs at the param-text level (artifact sha256s
+    reflect artifact bytes, the features_build.md posture).
+    ``lineage`` carries the precomputed features.npz/manifest sha256s,
+    the test-slice digest, and the torch thread count so this writer
+    stays pure (weight-free testable). ``produced_artifacts`` (WR-03)
+    carries the train stage's file names written by THIS run — the
+    artifact sha256 lines render ONLY for those (a stale leftover under
+    models/ from an earlier run renders no line rather than a lie);
+    None renders no artifact lines."""
     models_dir = Path(models_dir) if models_dir is not None else Path(".")
     lines: list = []
     lines.append("# Phase 3 ablation study report")
@@ -850,20 +896,25 @@ def _ablation_report_text(census, metrics_by_model, meta_by_model,
     lines.append(f"features.npz sha256: {lineage['features_sha256']}")
     lines.append(f"manifest sha256: {lineage['manifest_sha256']}")
     lines.append(f"test-slice digest: {lineage['digest']}")
-    # The four TRAIN-08 artifacts in canonical order — gitignored runtime
-    # files; their sha256s ARE the tracked provenance (a missing artifact
-    # renders no line rather than a lie).
+    # The TRAIN-08 artifact provenance — gitignored runtime files; their
+    # sha256s ARE the tracked provenance. WR-03: ONLY artifacts actually
+    # produced by THIS run render (the train stage records them in
+    # ``produced_artifacts``) — a stale leftover under models/ from an
+    # earlier run (e.g. ensemble_model.joblib on a run that never trained
+    # D) renders no line rather than a lie. Canonical TRAIN-08 order kept.
+    produced = set(produced_artifacts or ())
     for art_name, file_name in (
         ("baseline_ann", "baseline_ann.pt"),
         ("pose_mlp", "pose_mlp.pt"),
         ("ensemble_model", "ensemble_model.joblib"),
         ("label_encoder", "label_encoder.joblib"),
     ):
-        artifact = models_dir / file_name
-        if artifact.exists():
-            lines.append(
-                f"{art_name} sha256: {sha256_of(artifact)} (models/{file_name})"
-            )
+        if file_name in produced:
+            artifact = models_dir / file_name
+            if artifact.exists():
+                lines.append(
+                    f"{art_name} sha256: {sha256_of(artifact)} (models/{file_name})"
+                )
     for model_id in MODULE_ORDER:
         if model_id not in metrics_by_model:
             continue
@@ -1032,6 +1083,7 @@ def main(argv=None) -> int:
         selected,
         trained["meta_by_model"],
         trained["n_train"],
+        produced_artifacts=trained["produced_artifacts"],
     )
     return 0
 

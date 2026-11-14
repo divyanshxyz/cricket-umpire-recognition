@@ -106,6 +106,8 @@ class Record:
     canonical: str | None = None  # filled by canonical.map_label when outcome == keep
     exclude_reason: str | None = None
     phash_hex: str | None = None  # 16-hex-char 64-bit phash (dedup stage)
+    conflict: bool = False  # cluster had >1 distinct raw label (dedup stage)
+    conflict_detail: str = ""  # discarded labels, semicolon-joined (dedup stage)
 
 
 def stamp_source(records, source: str):

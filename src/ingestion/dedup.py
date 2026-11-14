@@ -1,9 +1,12 @@
 """Content-hash deduplication.
 
-Layer A: Roboflow stem groups (:func:`roboflow_stem` — ships now, wired into
-the run by Plan 02). Layer B: imagehash.phash clustered by brute-force
-pairwise Hamming distance <= threshold (INCLUSIVE at 8; distance 9 is
-distinct) via union-find — verified-fast at this dataset scale, no index.
+Layer A: Roboflow stem groups (:func:`stem_groups` — strips the export's own
+``.rf.<32hex>`` source-frame ID within each Roboflow source; wired into the
+run by Plan 02). Layer B: imagehash.phash clustered by brute-force pairwise
+Hamming distance <= threshold (INCLUSIVE at 8; distance 9 is distinct) via
+union-find — verified-fast at this dataset scale, no index. Cluster labels
+resolve per the locked policy (:func:`resolve_cluster_labels`): higher
+priority tier wins across tiers, majority label wins at equal tier.
 
 Determinism (RESEARCH.md Pattern 4 + Pitfall 9): candidate pairs come from a
 row-major scan, union roots resolve to the smaller index, and each cluster's
@@ -32,6 +35,27 @@ def roboflow_stem(filename: str) -> str:
     """
     stem = Path(filename).stem
     return RF_HASH.sub("", stem)
+
+
+def stem_groups(records):
+    """Layer A: group Roboflow-family records by (source, stripped .rf stem).
+
+    SEAM STUB — Plan 02 wires this layer (one survivor per stripped stem,
+    lexicographically smallest relpath; removed records reported separately
+    from phash removals per RESEARCH.md Pitfall 1) behind this contract.
+    """
+    return [], []
+
+
+def resolve_cluster_labels(cluster_records):
+    """Cluster-level label resolution (locked CONTEXT policy).
+
+    SEAM STUB — Plan 02 implements: higher priority tier wins across tiers;
+    majority label wins at equal tier (ties broken by lexicographic label
+    for determinism); conflict=True + discarded labels in the detail.
+    Returns (winner_raw_label, conflict, conflict_detail).
+    """
+    return "", False, ""
 
 
 def phash_file(path) -> str:

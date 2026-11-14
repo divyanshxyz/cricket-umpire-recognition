@@ -44,6 +44,27 @@ EXPECTED_STEMS = {
     "roboflow_umpire_wide": 558,
 }
 
+# Single source for the pipeline's parameter defaults (IN-02: previously
+# re-declared independently in the CLI coordinator and this module's report
+# fallbacks, and the report's parameter block could render a blank for a
+# value the pipeline actually defaulted). The CLI merges paths.yaml's
+# `params` section over this dict and passes the EFFECTIVE params into
+# :func:`build_audit_report`, so the T-01-06 determinism trace always shows
+# the values the run actually used. phash_threshold 8 and random_state 42
+# are locked CONTEXT decisions — change only via CONTEXT.
+DEFAULT_PARAMS = {
+    "phash_threshold": 8,   # near-duplicate Hamming distance <= threshold (inclusive)
+    "pad_frac": 0.15,       # bbox crop context padding, clamped to image bounds
+    "test_size": 0.2,       # stratified 80/20 split
+    "random_state": 42,     # split seed
+    "min_class_flag": 30,   # audit collect-more flag boundary (strict > rule)
+    "min_class_split": 10,  # stratified split guard
+}
+
+# Post-dedup kept-count sanity band (RESEARCH.md dedup expectations,
+# lines 124-127) — named once (IN-02) instead of two inline 1250/1450 pairs.
+SANITY_BAND = (1250, 1450)
+
 
 def no_box_only_stems(roboflow_records) -> int:
     """Count stripped stems whose Roboflow files are ALL no_box (WR-03).
@@ -263,8 +284,8 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
     collect-more flags (the Four contingency surfaces automatically); and
     the cross-split leak line (must read 0).
     """
-    threshold = int(params.get("phash_threshold", 8))
-    min_class_flag = int(params.get("min_class_flag", 30))
+    threshold = int(params.get("phash_threshold", DEFAULT_PARAMS["phash_threshold"]))
+    min_class_flag = int(params.get("min_class_flag", DEFAULT_PARAMS["min_class_flag"]))
     lines: list[str] = []
     lines.append("# Dataset ingestion + leak-free dedup audit (Phase 1)")
     lines.append("")
@@ -343,10 +364,10 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
     lines.append("## Totals")
     lines.append("")
     lines.append(f"Raw image files: {raw_total}")
-    lines.append(f"Kept after dedup: {kept} (sanity band 1250-1450)")
+    lines.append(f"Kept after dedup: {kept} (sanity band {SANITY_BAND[0]}-{SANITY_BAND[1]})")
     lines.append(
         "Sanity band verdict: "
-        + ("in band" if 1250 <= kept <= 1450
+        + ("in band" if SANITY_BAND[0] <= kept <= SANITY_BAND[1]
            else "OUT OF BAND - investigate dedup before Phase 2")
     )
     lines.append(f"Manifest class rows (post conditional evaluation): {len(rows)}")

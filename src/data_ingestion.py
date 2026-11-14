@@ -41,7 +41,11 @@ from ingestion.adapters import (
     parse_roboflow,
     stamp_source,
 )
-from ingestion.audit import build_audit_report, build_console_summary
+from ingestion.audit import (
+    DEFAULT_PARAMS,
+    build_audit_report,
+    build_console_summary,
+)
 from ingestion.canonical import UnknownLabelError, load_class_map, map_label
 from ingestion.crops import crop_row
 from ingestion.dedup import cluster_by_phash, phash_file, stem_groups
@@ -126,9 +130,13 @@ def main(argv=None) -> int:
     #    Layer A: Roboflow stem groups first (strips the export's own .rf
     #    source-frame ID — removes the augmented copies phash cannot catch,
     #    RESEARCH.md Pitfall 1). Layer B: phash union-find across the union
-    #    of ALL remaining records (threshold inclusive at 8).
-    params = paths_cfg.get("params") or {}
-    threshold = int(params.get("phash_threshold", 8))
+    #    of ALL remaining records (threshold inclusive at 8). Effective
+    #    params = paths.yaml merged over DEFAULT_PARAMS (IN-02 single
+    #    source); they flow to every stage AND to the audit's parameter
+    #    block, so the determinism trace always records the values this run
+    #    actually used instead of rendering blanks for defaulted keys.
+    params = {**DEFAULT_PARAMS, **(paths_cfg.get("params") or {})}
+    threshold = int(params["phash_threshold"])
     roots = {
         name: entry["root"]
         for name, entry in (paths_cfg.get("dataset_roots") or {}).items()
@@ -157,7 +165,7 @@ def main(argv=None) -> int:
     #     recorded in the audit, never silently omitted. Failed classes'
     #     rows leave the manifest here (both aligned lists filtered by the
     #     same indices) and the decision renders in the audit.
-    min_class_flag = int(params.get("min_class_flag", 30))
+    min_class_flag = int(params["min_class_flag"])
     conditional_names = sorted((class_cfg.get("conditional_classes") or {}))
     cond_counter = Counter(row["canonical_class"] for row in rows)
     conditional_decision = evaluate_conditional(
@@ -180,9 +188,9 @@ def main(argv=None) -> int:
     #    guard pre-empts sklearn's two cryptic stratify failure modes with a
     #    readable per-class message + the collect-more contingency; no
     #    source's own split0 is ever consulted.
-    test_size = float(params.get("test_size", 0.2))
-    random_state = int(params.get("random_state", 42))
-    min_class_split = int(params.get("min_class_split", 10))
+    test_size = float(params["test_size"])
+    random_state = int(params["random_state"])
+    min_class_split = int(params["min_class_split"])
     split_counts = assign_split(rows, test_size, random_state, min_class_split)
 
     # 7. LEAK CHECK — cross-split phash pairs must be zero (the phase's
@@ -210,7 +218,7 @@ def main(argv=None) -> int:
     #     data drift a run would otherwise overwrite some crops and strand
     #     the rest as ghost images for directory-scanning consumers.
     crops_rel = str(paths_cfg["outputs"]["crops_dir"]).replace("\\", "/").rstrip("/")
-    pad_frac = float(params.get("pad_frac", 0.15))
+    pad_frac = float(params["pad_frac"])
     crop_stats = {
         "written": 0,
         "non_roboflow": 0,

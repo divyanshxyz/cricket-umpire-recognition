@@ -31,10 +31,26 @@ _TRAILING_COUNTER = re.compile(r"(?:[_\-\s]*\d+)+$")
 # Decode-replacement events observed by read_label_text (utf-8, errors="replace").
 _DECODE_EVENTS: list[int] = []
 
+# Invalid bbox rows observed while parsing label files (ASVS V5): malformed or
+# out-of-range rows are recorded here for the audit — never silently passed.
+# The counter seam ships alongside the decode counter; Plan 02's parsers call
+# record_invalid_box.
+_INVALID_BOX: list[str] = []
+
 
 def decode_events() -> int:
     """Number of decode-replacement events observed while reading label files."""
     return len(_DECODE_EVENTS)
+
+
+def record_invalid_box(path, line_no: int, reason: str) -> None:
+    """Record one malformed/out-of-range bbox row for the audit (ASVS V5)."""
+    _INVALID_BOX.append(f"{Path(path)}:{line_no}: {reason}")
+
+
+def invalid_box_events() -> list[str]:
+    """Invalid bbox row records (one string per rejected row)."""
+    return list(_INVALID_BOX)
 
 
 def read_label_text(path) -> str:

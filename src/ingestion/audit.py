@@ -45,6 +45,28 @@ EXPECTED_STEMS = {
 }
 
 
+def no_box_only_stems(roboflow_records) -> int:
+    """Count stripped stems whose Roboflow files are ALL no_box (WR-03).
+
+    Those stems' copies never enter the keep/conditional dedup pool, so the
+    plain ``pooled + no_box files = file-level`` equation over-attributes
+    ``(members - 1)`` file-level removals to each such stem. The correct
+    identity is ``file_level = pooled + no_box_files - no_box_only_stems``;
+    the reconciliation sites below verify it with this term BEFORE printing
+    any equation — the section's own "nothing is double-counted silently"
+    claim must not rely on an unverified arithmetic assumption.
+    """
+    no_box_keys = {
+        (r.source, roboflow_stem(r.relpath))
+        for r in roboflow_records if r.outcome == "no_box"
+    }
+    pooled_keys = {
+        (r.source, roboflow_stem(r.relpath))
+        for r in roboflow_records if r.outcome != "no_box"
+    }
+    return len(no_box_keys - pooled_keys)
+
+
 def build_console_summary(source_rows, records, survivors, removed,
                           stem_removed=None, crop_stats=None,
                           conditional_decision=None) -> str:
@@ -106,11 +128,31 @@ def build_console_summary(source_rows, records, survivors, removed,
         })
         file_level = len(roboflow_parsed) - roboflow_stems
         if file_level != len(stem_removed):
-            lines.append(
-                f"  (file-level stem-copy removals: {file_level} = {len(stem_removed)} "
-                f"pooled + {file_level - len(stem_removed)} no_box copies excluded "
-                "before dedup — reconciled in reports/dedup_audit.md)"
-            )
+            # WR-03: verify the reconciliation identity before printing it —
+            # file_level = pooled + no_box_files - no_box_only_stems. Printing
+            # an assumed equation would state a false arithmetic fact the
+            # moment two no_box files share a stripped stem.
+            no_box_count = sum(1 for r in roboflow_parsed if r.outcome == "no_box")
+            no_box_only = no_box_only_stems(roboflow_parsed)
+            delta = file_level - len(stem_removed)
+            if delta == no_box_count and no_box_only == 0:
+                lines.append(
+                    f"  (file-level stem-copy removals: {file_level} = {len(stem_removed)} "
+                    f"pooled + {no_box_count} no_box copies excluded "
+                    "before dedup — reconciled in reports/dedup_audit.md)"
+                )
+            elif delta == no_box_count - no_box_only:
+                lines.append(
+                    f"  (file-level stem-copy removals: {file_level} = {len(stem_removed)} "
+                    f"pooled + {no_box_count} no_box copies - {no_box_only} all-no_box "
+                    "stems — reconciled in reports/dedup_audit.md)"
+                )
+            else:
+                lines.append(
+                    f"  (file-level stem-copy removals {file_level} vs pooled "
+                    f"{len(stem_removed)} + no_box {no_box_count}: UNRECONCILED "
+                    f"(delta {delta - no_box_count}) — see reports/dedup_audit.md)"
+                )
     for src in sorted(stem_by_source):
         lines.append(f"  {src}: {stem_by_source[src]}")
     lines.append(
@@ -340,11 +382,31 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
         )
     pooled_stem = len(stem_removed)
     if file_level_stem != pooled_stem:
-        lines.append(
-            f"  reconciliation: {pooled_stem} pooled copies removed by Layer A "
-            f"+ {no_box_roboflow} zero-box copies excluded as no_box before "
-            f"dedup (counted above) = {file_level_stem} file-level"
-        )
+        # WR-03: verify before printing — the equation is only rendered when
+        # the identity it states actually holds on this run's data. Under
+        # data drift (two no_box files sharing a stripped stem) the plain
+        # equation would be arithmetically false, so the corrected form or
+        # an explicit UNRECONCILED verdict is printed instead.
+        no_box_only = no_box_only_stems(roboflow_records)
+        delta = file_level_stem - pooled_stem
+        if delta == no_box_roboflow and no_box_only == 0:
+            lines.append(
+                f"  reconciliation: {pooled_stem} pooled copies removed by Layer A "
+                f"+ {no_box_roboflow} zero-box copies excluded as no_box before "
+                f"dedup (counted above) = {file_level_stem} file-level"
+            )
+        elif delta == no_box_roboflow - no_box_only:
+            lines.append(
+                f"  reconciliation: {pooled_stem} pooled copies removed by Layer A "
+                f"+ {no_box_roboflow} zero-box copies - {no_box_only} all-no_box "
+                f"stems excluded before dedup (counted above) = {file_level_stem} file-level"
+            )
+        else:
+            lines.append(
+                f"  UNRECONCILED: file-level stem-copy removals {file_level_stem} "
+                f"vs pooled {pooled_stem} + no_box {no_box_roboflow} "
+                f"(delta {delta - no_box_roboflow}) — investigate before Phase 2"
+            )
     lines.append(f"Duplicates removed - phash near-duplicates: {len(removed)}")
     removed_by_source = Counter(r.source for r in removed)
     for src in sorted(removed_by_source):

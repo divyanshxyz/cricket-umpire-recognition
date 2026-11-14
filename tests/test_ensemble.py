@@ -33,6 +33,10 @@ synthetic data only — no npz, no real training runs. Pinned contracts:
   (never an unpickler error), a matching expectation loads, None skips
   the check; eval_model_d threads the meta-carried artifact_sha256 into
   the same gate.
+- TRAIN-03/precision backstop: soft_vote (Model D's eval prediction seam)
+  preserves EXACT ties — (a+a+a)/3.0 is exact for float32 inputs, so tied
+  columns stay bit-equal through the vote and argmax resolves to the FIRST
+  (lowest) index; a distinct-max column keeps its position.
 """
 
 import numpy as np
@@ -422,3 +426,32 @@ def test_eval_model_d_threads_meta_sha_into_the_gate(tmp_path):
     # No meta -> bare reload stays usable (interactive path).
     proba2 = eval_model_d(arrays, test_idx, LE, tmp_path, meta=None)
     assert proba2.shape == (3, 6)
+
+
+# ---------------------------------------------------------------------------
+# Test 8 (TRAIN-03/precision backstop): exact ties survive the float64 vote
+# and resolve to the FIRST (lowest) index; columns never reorder
+# ---------------------------------------------------------------------------
+
+
+def test_soft_vote_preserves_exact_ties_and_column_order_for_the_eval_argmax():
+    # (2, 6) float32 rows — the dtype real member probas carry (float32
+    # values are exact in the float64 vote): row 0 ties columns 1 and 2
+    # exactly at the max; row 1's clear maximum sits at column 4. Three
+    # IDENTICAL members keep the float64 mean exact so the tie survives the
+    # vote bit-for-bit, and member_classes exercises the alignment asserts
+    # on this path too.
+    m = np.array(
+        [
+            [0.10, 0.35, 0.35, 0.05, 0.10, 0.05],  # exact tie at columns 1, 2
+            [0.05, 0.10, 0.05, 0.10, 0.60, 0.10],  # clear max at column 4
+        ],
+        dtype=np.float32,
+    )
+    voted = soft_vote(m, m, m, member_classes=[np.arange(6)] * 3)
+    # The tied columns stay BIT-EQUAL through the float64 mean...
+    assert voted[0, 1] == voted[0, 2]
+    # ...and argmax resolves the tie to the FIRST (lowest) index while the
+    # distinct-max row keeps its column (no reordering anywhere on the eval
+    # path — train_ablation.py's proba.argmax(axis=1) consumes this output).
+    assert np.array_equal(np.argmax(voted, axis=1), np.array([1, 4]))

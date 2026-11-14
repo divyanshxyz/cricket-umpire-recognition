@@ -18,6 +18,11 @@ MinMaxScaler). Pinned contracts:
 - eval_model_a threads the meta-carried ``artifact_sha256`` into the gate
   end-to-end: correct sha -> probas; wrong sha -> the gate trips inside
   the eval entry; no meta -> bare reload.
+- TRAIN-03/precision backstop: predict_proba (the shared eval prediction
+  seam) resolves EXACT ties to the FIRST (lowest) class index — numpy's
+  documented argmax rule observed at the production seam — and never
+  reorders proba columns (a distinct-max column keeps its position;
+  identical fp32 softmax inputs give bit-equal fp32 outputs).
 """
 
 import numpy as np
@@ -29,6 +34,7 @@ from src.models.baseline_ann import (
     MiliBaseline,
     eval_model_a,
     load_baseline_checkpoint,
+    predict_proba,
     save_baseline_checkpoint,
 )
 from src.models.data import canonical_classes, fit_label_encoder, sha256_of
@@ -128,3 +134,50 @@ def test_eval_model_a_threads_meta_sha_into_the_gate(tmp_path):
     # No meta -> bare reload stays usable (interactive path).
     proba2 = eval_model_a(arrays, test_idx, LE, tmp_path, meta=None)
     assert proba2.shape == (3, 6)
+
+
+# ---------------------------------------------------------------------------
+# TRAIN-03/precision backstop: exact ties at the eval prediction seam
+# (predict_proba) resolve to the FIRST (lowest) index; columns never reorder
+# ---------------------------------------------------------------------------
+
+
+class _FixedLogits(torch.nn.Module):
+    """Tiny module returning a fixed (1, 6) logits buffer for every row —
+    drives the REAL predict_proba without any learned weights (the input
+    values are irrelevant; only the seam's behavior is under test)."""
+
+    def __init__(self, logits):
+        super().__init__()
+        self.register_buffer(
+            "logits", torch.tensor(logits, dtype=torch.float32).reshape(1, 6)
+        )
+
+    def forward(self, x):
+        return self.logits.expand(x.shape[0], -1)
+
+
+def test_predict_proba_resolves_exact_ties_to_first_index_and_preserves_column_order():
+    X = np.zeros((4, 51), dtype=np.float32)  # forward ignores the input values
+
+    # (a) exact two-class tie at the max (columns 1 and 2): identical fp32
+    # softmax inputs give BIT-EQUAL fp32 outputs, and argmax resolves to the
+    # FIRST (lowest) tied index — numpy's documented rule observed at the
+    # production seam, never manufactured by reordering columns.
+    tie = _FixedLogits([2.0, 5.0, 5.0, 1.0, 3.0, 0.5])
+    proba = predict_proba(tie, X)
+    assert proba.shape == (4, 6)
+    assert (proba[:, 1] == proba[:, 2]).all()  # bit-equal, not allclose
+    assert proba.argmax(axis=1).tolist() == [1, 1, 1, 1]
+
+    # (b) a distinct maximum keeps its own column: the eval path never
+    # reorders or rotates proba columns.
+    distinct = _FixedLogits([0.1, 0.2, 0.3, 0.4, 5.0, 0.5])
+    proba_d = predict_proba(distinct, X)
+    assert proba_d.argmax(axis=1).tolist() == [4, 4, 4, 4]
+
+    # (c) all-zero logits: every column bit-equal, tie resolves to index 0.
+    uniform = _FixedLogits([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    proba_u = predict_proba(uniform, X)
+    assert (proba_u[:, :1] == proba_u).all()  # all six columns bit-equal
+    assert proba_u.argmax(axis=1).tolist() == [0, 0, 0, 0]

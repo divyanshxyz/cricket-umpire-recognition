@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.ingestion.audit import build_audit_report, no_box_only_stems
+from src.ingestion.audit import build_audit_report, non_pool_only_stems
 from src.ingestion.manifest import assign_split, evaluate_conditional, leak_check, write_manifest
 
 # 9-bit windows stepped 5 bits apart: adjacent windows overlap 4 bits, so any
@@ -367,9 +367,11 @@ def test_build_audit_report_flags_no_class_when_all_above_30():
 # ---------------------------------------------------------------------------
 
 
-def test_no_box_only_stems_counts_all_no_box_stems():
-    # WR-03 term: a stripped stem whose files are ALL no_box over-attributes
-    # (members - 1) file-level removals; mixed stems contribute 0.
+def test_non_pool_only_stems_counts_all_non_pool_stems():
+    # WR-03 + IN-R2-02 term: a stripped stem whose files ALL exit before the
+    # dedup pool (no_box or excluded-as-class) over-attributes
+    # (members - 1) file-level removals; stems holding any pooled record
+    # (keep/conditional) contribute 0.
     roboflow = [
         rec("roboflow_umpire_wide", "four", "keep",
             relpath=f"train/images/frame_0001_jpg.rf.{'aa' * 16}.jpg"),
@@ -379,14 +381,20 @@ def test_no_box_only_stems_counts_all_no_box_stems():
             relpath=f"train/images/frame_0002_jpg.rf.{'cc' * 16}.jpg"),
         rec("roboflow_umpire_wide", None, "no_box",
             relpath=f"test/images/frame_0002_jpg.rf.{'dd' * 16}.jpg"),
+        rec("roboflow_umpire_wide", "DRS", "excluded",
+            relpath=f"train/images/frame_0003_jpg.rf.{'ee' * 16}.jpg"),
+        rec("roboflow_umpire_wide", "DRS", "excluded",
+            relpath=f"train/images/frame_0003_jpg.rf.{'ff' * 16}.jpg"),
     ]
-    assert no_box_only_stems(roboflow) == 1  # only frame_0002 is all-no_box
+    # frame_0001 holds a pooled keep -> 0; frame_0002 (all no_box) and
+    # frame_0003 (all excluded) are the only all-non-pool stems.
+    assert non_pool_only_stems(roboflow) == 2
 
 
 def test_build_audit_report_reconciliation_corrected_for_all_no_box_stems():
     # Drift case: two no_box files share a NEW all-no_box stem, so the plain
     # pooled + no_box equation no longer holds — the corrected form with the
-    # all-no_box-stems term must render, never the false equation.
+    # all-non-pool-stems term must render, never the false equation.
     inputs = report_inputs()
     inputs["records"] = inputs["records"] + [
         rec("roboflow_umpire_wide", None, "no_box",
@@ -396,7 +404,32 @@ def test_build_audit_report_reconciliation_corrected_for_all_no_box_stems():
     ]
     report = build_audit_report(**inputs)
     assert "UNRECONCILED" not in report  # identity still holds in corrected form
-    assert "+ 4 zero-box copies - 1 all-no_box stems excluded before dedup" in report
+    assert (
+        "+ 4 zero-box copies excluded as no_box before dedup (counted above) "
+        "- 1 all-non-pool stems" in report
+    )
+    assert "= 6 file-level" in report
+
+
+def test_build_audit_report_reconciliation_counts_excluded_roboflow_copies():
+    # IN-R2-02 drift case: two excluded-as-class ROBOFLOW files sharing a
+    # stripped stem used to be invisible to the reconciliation identity (it
+    # assumed every non-pool record was no_box), so a reconcilable run
+    # false-alarmed UNRECONCILED. The exact identity counts them and renders
+    # their term: file_level 6 = 3 pooled + 2 no_box + 2 excluded - 1 stem.
+    inputs = report_inputs()
+    inputs["records"] = inputs["records"] + [
+        rec("roboflow_umpire_wide", "DRS", "excluded",
+            relpath=f"train/images/frame_9100_jpg.rf.{'aa' * 16}.jpg"),
+        rec("roboflow_umpire_wide", "DRS", "excluded",
+            relpath=f"train/images/frame_9100_jpg.rf.{'bb' * 16}.jpg"),
+    ]
+    report = build_audit_report(**inputs)
+    assert "UNRECONCILED" not in report
+    assert (
+        "+ 2 excluded-as-class copies excluded before dedup (counted above) "
+        "- 1 all-non-pool stems" in report
+    )
     assert "= 6 file-level" in report
 
 

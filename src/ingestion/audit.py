@@ -148,7 +148,13 @@ def build_console_summary(source_rows, records, survivors, removed,
         if parsed and census > parsed:
             detail += f" (of {census} on disk; capped)"
         elif not parsed and census:
-            detail += f" (of {census} on disk; adapter stub — Plan 02 fills)"
+            # IN-R2-05: all three families are full implementations since
+            # d83fded — a zero-parse source is a layout or --limit problem,
+            # not a stub, so the message must point the debugger at those.
+            detail += (
+                f" (of {census} on disk; 0 records parsed — check the source "
+                "layout or the --limit flag)"
+            )
         classes = ", ".join(vocab) if vocab else "-"
         lines.append(f"[{status}] {name:<24} {detail}  family={family}  classes: {classes}")
 

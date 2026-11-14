@@ -44,6 +44,11 @@ EXPECTED_STEMS = {
     "roboflow_umpire_wide": 558,
 }
 
+# The export whose umpire-class bbox-row count the crop-rule section logs
+# (IN-01 interpolates its parsed-file count from the run's records instead
+# of hardcoding "2,497") — the same source the stems-sanity row keys.
+CROP_RULE_EXPORT_SOURCE = "roboflow_umpire_wide"
+
 # Single source for the pipeline's parameter defaults (IN-02: previously
 # re-declared independently in the CLI coordinator and this module's report
 # fallbacks, and the report's parameter block could render a blank for a
@@ -476,11 +481,21 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
         verdict = "included" if d["included"] else "excluded"
         lines.append(f"{cls}: {d['count']} {verdict} (conditional class, {d['reason']})")
 
-    # Crop rule — explicit log of the single umpire-class bbox row plus the
+    # Crop rule — explicit log of the umpire-class bbox rows plus the
     # research-driven adjustment note (CONTEXT 'largest umpire box' was
-    # unimplementable: the umpire annotation class carries 1 bbox row).
+    # unimplementable: the umpire annotation class carries a single bbox
+    # row). IN-01: both the count and the export size are interpolated, not
+    # hardcoded — a hardcoded "1 bbox row across the 2,497-image export"
+    # would self-contradict the "seen: N" line above it under data drift.
+    # The export is roboflow_umpire_wide (the source EXPECTED_STEMS keys);
+    # its parsed-file count is computed from this run's records, not frozen.
     distribution = bbox_row_class_counts()
     umpire_rows = distribution.get("umpire", 0)
+    export_images = sum(
+        1 for r in records
+        if r.family == "roboflow-yolo" and r.source == CROP_RULE_EXPORT_SOURCE
+    )
+    row_word = "row" if umpire_rows == 1 else "rows"
     lines.append("")
     lines.append("## Crop rule (research-driven adjustment, logged explicitly)")
     lines.append("")
@@ -489,13 +504,15 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
         lines.append(f"bbox rows seen by class: {dist} (total {sum(distribution.values())})")
     lines.append(
         f"umpire-class bbox rows seen: {umpire_rows} — logged explicitly; the "
-        "umpire annotation class has 1 bbox row across the 2,497-image export "
+        f"umpire annotation class has {umpire_rows} bbox {row_word} across the "
+        f"{export_images:,}-image export "
         "because boxes carry the signal class (the umpire performing it)"
     )
     lines.append(
         "Adjustment note: the CONTEXT decision 'when multiple umpire boxes exist, "
         "crop the largest-area umpire box' was unimplementable as written — the "
-        "umpire class has 1 bbox row across 2,497 images. Operative rule: crop the "
+        f"umpire class has {umpire_rows} bbox {row_word} across "
+        f"{export_images:,} images. Operative rule: crop the "
         "largest-area annotated box of ANY class (every box denotes the umpire); "
         "the row's canonical class = that box's class. Intent preserved: every "
         "Roboflow image still yields the umpire crop with 15% clamped padding."

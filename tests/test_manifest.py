@@ -333,10 +333,13 @@ def test_build_audit_report_renders_full_contract():
         assert "collect more" in report
     # Leak line literal.
     assert "Cross-split phash leaks (Hamming <= 8): 0" in report
-    # Crop-rule log line for the single umpire-class bbox row + adjustment note.
+    # Crop-rule log line + adjustment note (IN-01: counts are interpolated
+    # from the data, never hardcoded — these inputs saw 0 umpire bbox rows
+    # and 23 roboflow files, and the narrative must say exactly that).
     assert "umpire-class bbox rows" in report
     assert "largest-area" in report.lower()
-    assert "1 bbox row" in report
+    assert "umpire-class bbox rows seen: 0" in report
+    assert "has 0 bbox rows across the 23-image export" in report
     # Conflicts count + top examples.
     assert "Label conflicts resolved" in report
     assert "sixes; six" in report

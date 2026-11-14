@@ -386,10 +386,15 @@ def main(argv=None) -> int:
         print("[dry-run] writes disabled — no model loaded, nothing written")
         return 0
 
-    # Real run: ONE extractor instance before the loop (never per row); the
-    # model itself loads lazily on first extract (heavy torch/ultralytics
-    # imports stay inside the extraction path).
+    # Real run: ONE extractor instance before the loop (never per row), and
+    # ONE eager model warm-up (WR-02): a missing/corrupt weights path fails
+    # fast right here as the config error it is — one clear traceback, zero
+    # rows processed — never 421 identical decode_error rows after minutes
+    # of CPU. The heavy torch/ultralytics imports stay inside the
+    # extraction path (load_pose_config, --dry-run and module import never
+    # need them).
     extractor = PoseFeatureExtractor(config_path)
+    extractor.warm_up()
     ok_rows, failures, stats = extract_rows(
         manifest, base, lambda image: extractor.extract(image)
     )

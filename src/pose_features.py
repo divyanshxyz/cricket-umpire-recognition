@@ -10,6 +10,9 @@ class owns model loading + tensor->numpy conversion only.
 Failure contract (locked): every guard failure returns (None,
 ExtractionFailure) with a typed reason recorded in the module event list —
 nothing raises mid-batch, nothing is silent (ASVS V5 posture, Phase 01).
+The one sanctioned raise is a model-LOAD failure (WR-02): a missing or
+corrupt weights path is a systemic config error that fails fast before any
+row is processed — never N identical per-image decode_error rows.
 """
 
 from __future__ import annotations
@@ -429,15 +432,30 @@ class PoseFeatureExtractor:
             self._model = YOLO(str(weights))
         return self._model
 
+    def warm_up(self):
+        """Eagerly load the model (WR-02): batch callers invoke this ONCE
+        before the row loop so a missing/corrupt weights path fails fast as
+        the config error it is — one clear traceback, zero rows processed —
+        never as N identical per-image decode_error rows after minutes of
+        CPU. Returns self for chaining."""
+        self._ensure_model()
+        return self
+
     def extract(self, image):
         """image -> (raw51 float32, engineered59 float32) on success, or
-        (None, ExtractionFailure) on any guard trip. Every failure is typed,
-        recorded in the module event list, and never raises (T-02-01
-        containment: a corrupt/hostile file costs one typed row, not a
-        crashed batch)."""
+        (None, ExtractionFailure) on any guard trip. Every failure is typed
+        and recorded in the module event list; per-image inference is
+        contained (T-02-01: a corrupt/hostile file costs one typed row, not
+        a crashed batch). Model loading is deliberately NOT contained
+        (WR-02): a missing/corrupt weights path raises once, loudly, before
+        any row is processed — batch callers should warm_up() first."""
         source_label = str(image) if isinstance(image, (str, Path)) else "ndarray"
+        # WR-02: OUTSIDE the per-image containment — model-load failures
+        # (missing/corrupt weights, bad device) are systemic config errors,
+        # not per-image decode failures.
+        model = self._ensure_model()
         try:
-            results = self._ensure_model().predict(
+            results = model.predict(
                 source=image,
                 conf=float(self.config["det_conf"]),
                 imgsz=int(self.config["imgsz"]),

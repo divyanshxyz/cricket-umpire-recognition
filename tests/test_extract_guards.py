@@ -109,3 +109,35 @@ def test_valid_17_3_tensor_passes_the_schema_guards(monkeypatch):
     assert raw is not None and eng is not None
     assert raw.shape == (51,) and eng.shape == (59,)
     assert raw.dtype == np.float32 and eng.dtype == np.float32
+
+
+def test_model_load_failure_fails_fast_not_decode_error(monkeypatch):
+    # WR-02 regression: model loading sits OUTSIDE the per-image
+    # containment — a missing/corrupt weights path raises from extract()
+    # (fail-fast config error, zero rows processed) instead of being
+    # swallowed into a per-image decode_error row (which previously
+    # produced 421 identical typed failures for one bad weights_path).
+    def boom():
+        raise FileNotFoundError("yolov8n-pose.pt missing (bad weights_path)")
+
+    extractor = PoseFeatureExtractor()
+    monkeypatch.setattr(extractor, "_ensure_model", boom)
+    before = len(failure_events())
+    with pytest.raises(FileNotFoundError):
+        extractor.extract(np.zeros((64, 64, 3), dtype=np.uint8))
+    assert len(failure_events()) == before  # NOT recorded as a decode_error
+
+
+def test_warm_up_loads_model_eagerly(monkeypatch):
+    # WR-02: batch callers warm the model up once before the loop so a
+    # weights/config error fails before any row is processed.
+    calls = []
+
+    def fake_ensure(self):
+        calls.append(1)
+        return object()
+
+    monkeypatch.setattr(PoseFeatureExtractor, "_ensure_model", fake_ensure)
+    extractor = PoseFeatureExtractor()
+    assert extractor.warm_up() is extractor
+    assert len(calls) == 1

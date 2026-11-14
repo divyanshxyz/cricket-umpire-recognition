@@ -55,7 +55,6 @@ import yaml
 
 from src.pose_features import (
     PoseFeatureExtractor,
-    ExtractionFailure,
     failure_events,
     load_pose_config,
     scale_warning_events,

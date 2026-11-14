@@ -139,15 +139,21 @@ def scale_warning_events() -> list[str]:
 def select_umpire(boxes_xyxy, box_conf, img_w, img_h):
     """Locked composite umpire selection (pure numpy, weight-free testable).
 
-    Score = (bbox_area / image_area) x (1 - 2*|cx_norm - 0.5|), both terms in
-    [0, 1], computed in float64 with NO rounding anywhere; max wins. The
-    exact-equality tie set is resolved by maximum detection confidence
-    (order-independent); a full confidence tie INSIDE that set resolves
-    lexicographically by box coordinates (x0, y0, x1, y1) — selection is
-    fully order-independent under detection-order permutation (WR-01: a
-    bare argmax over the tied subset would silently pick the first index
-    and follow detection order). Returns (person_index, None) or (None,
-    ExtractionFailure("no_person", ...)).
+    Score = (bbox_area / image_area) x (1 - 2*|cx_norm - 0.5|), computed in
+    float64 with NO rounding anywhere; max wins. Valid input domain (IN-05):
+    for box centers within image bounds both terms are in [0, 1] —
+    ultralytics boxes are image-bounded in the real call path — but
+    centrality itself is NOT bounded as a pure function: it goes negative
+    for a center outside the image (e.g. -0.5 for a box spanning x 50-200
+    on a 100-px image). The formula is the locked CONTEXT composite — no
+    clamping; this docstring is the contract. The exact-equality tie set is
+    resolved by maximum detection confidence (order-independent); a full
+    confidence tie INSIDE that set resolves lexicographically by box
+    coordinates (x0, y0, x1, y1) — selection is fully order-independent
+    under detection-order permutation (WR-01: a bare argmax over the tied
+    subset would silently pick the first index and follow detection order).
+    Returns (person_index, None) or (None, ExtractionFailure("no_person",
+    ...)).
 
     Multi-person scenes are first-class: exactly one index comes back
     regardless of how many people are detected (assumption-delta

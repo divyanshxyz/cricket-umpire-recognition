@@ -49,6 +49,13 @@ _INVALID_BOX: list[str] = []
 # umpire row is never silently dropped.
 _BOX_ROW_CLASSES: Counter = Counter()
 
+# Per-export view of the census above, keyed by the export's root directory
+# name (IN-R2-03): the crop-rule section must scope its umpire-row count to
+# the export the prose names (CROP_RULE_EXPORT_SOURCE), not to the union of
+# all Roboflow families — under drift, another export carrying an "umpire"
+# class name would otherwise be attributed to that export's prose.
+_BOX_ROW_CLASSES_BY_ROOT: dict[str, Counter] = {}
+
 
 def decode_events() -> int:
     """Number of decode-replacement events observed while reading label files."""
@@ -65,9 +72,17 @@ def invalid_box_events() -> list[str]:
     return list(_INVALID_BOX)
 
 
-def bbox_row_class_counts() -> dict[str, int]:
-    """Valid bbox rows seen while parsing, by class name (sorted; audit census)."""
-    return dict(sorted(_BOX_ROW_CLASSES.items()))
+def bbox_row_class_counts(root_name: str | None = None) -> dict[str, int]:
+    """Valid bbox rows seen while parsing, by class name (sorted; audit census).
+
+    With ``root_name`` (an export's root directory name), returns that one
+    Roboflow export's rows only — IN-R2-03: the crop-rule section scopes its
+    umpire-row count to CROP_RULE_EXPORT_SOURCE the same way its prose does.
+    """
+    if root_name is None:
+        return dict(sorted(_BOX_ROW_CLASSES.items()))
+    per_root = _BOX_ROW_CLASSES_BY_ROOT.get(root_name)
+    return dict(sorted(per_root.items())) if per_root else {}
 
 
 def read_label_text(path) -> str:
@@ -206,7 +221,7 @@ def parse_roboflow(root, family: str, priority: int) -> list[Record]:
                 continue
             rel = img.relative_to(root).as_posix()
             box, box_class, multibox = _parse_label_boxes(
-                lbl_dir / f"{img.stem}.txt", names
+                lbl_dir / f"{img.stem}.txt", names, Path(root).name
             )
             if box is None:
                 records.append(
@@ -238,8 +253,12 @@ def parse_roboflow(root, family: str, priority: int) -> list[Record]:
     return records
 
 
-def _parse_label_boxes(lbl_path, names) -> tuple[tuple | None, str | None, bool]:
+def _parse_label_boxes(lbl_path, names, root_name) -> tuple[tuple | None, str | None, bool]:
     """Parse one YOLO label file -> (largest_box, box_class, multibox).
+
+    ``root_name`` is the export's root directory name (IN-R2-03): valid rows
+    are counted into the per-export census alongside the global one so the
+    audit can scope its crop-rule narrative to a single export.
 
     Returns (None, None, multibox) when the file has zero valid rows (missing
     file, or every row malformed/out-of-range — those are counted via
@@ -274,6 +293,7 @@ def _parse_label_boxes(lbl_path, names) -> tuple[tuple | None, str | None, bool]
                 record_invalid_box(lbl_path, line_no, f"class index {idx} out of range")
                 continue
             _BOX_ROW_CLASSES[str(names[idx])] += 1
+            _BOX_ROW_CLASSES_BY_ROOT.setdefault(root_name, Counter())[str(names[idx])] += 1
             valid.append(((cx, cy, w, h), str(names[idx])))
     if not valid:
         return None, None, total_rows > 1

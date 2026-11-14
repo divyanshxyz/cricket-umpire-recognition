@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.metadata
 from collections import Counter
+from pathlib import Path
 
 from .adapters import bbox_row_class_counts, decode_events, invalid_box_events
 from .dedup import roboflow_stem
@@ -550,9 +551,20 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
     # hardcoded — a hardcoded "1 bbox row across the 2,497-image export"
     # would self-contradict the "seen: N" line above it under data drift.
     # The export is roboflow_umpire_wide (the source EXPECTED_STEMS keys);
-    # its parsed-file count is computed from this run's records, not frozen.
+    # its parsed-file count is computed from this run's records, not frozen,
+    # and the umpire-row count is scoped to this very export (IN-R2-03) so
+    # the count and the prose name the same source by construction under
+    # drift.
     distribution = bbox_row_class_counts()
-    umpire_rows = distribution.get("umpire", 0)
+    export_root = next(
+        (row["root"] for row in source_rows if row["name"] == CROP_RULE_EXPORT_SOURCE),
+        None,
+    )
+    umpire_rows = (
+        bbox_row_class_counts(Path(export_root).name).get("umpire", 0)
+        if export_root
+        else 0
+    )
     export_images = sum(
         1 for r in records
         if r.family == "roboflow-yolo" and r.source == CROP_RULE_EXPORT_SOURCE
@@ -565,8 +577,9 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
         dist = ", ".join(f"{cls} {n}" for cls, n in distribution.items())
         lines.append(f"bbox rows seen by class: {dist} (total {sum(distribution.values())})")
     lines.append(
-        f"umpire-class bbox rows seen: {umpire_rows} — logged explicitly; the "
-        f"umpire annotation class has {umpire_rows} bbox {row_word} across the "
+        f"umpire-class bbox rows in {CROP_RULE_EXPORT_SOURCE} (the crop-rule "
+        f"export): {umpire_rows} — logged explicitly; the umpire annotation "
+        f"class has {umpire_rows} bbox {row_word} across the "
         f"{export_images:,}-image export "
         "because boxes carry the signal class (the umpire performing it)"
     )

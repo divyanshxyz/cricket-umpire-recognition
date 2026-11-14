@@ -338,7 +338,9 @@ def test_build_audit_report_renders_full_contract():
     # and 23 roboflow files, and the narrative must say exactly that).
     assert "umpire-class bbox rows" in report
     assert "largest-area" in report.lower()
-    assert "umpire-class bbox rows seen: 0" in report
+    # IN-R2-03: the count is scoped to the crop-rule export and the line
+    # names that source explicitly, so count and prose cannot drift apart.
+    assert "umpire-class bbox rows in roboflow_umpire_wide (the crop-rule export): 0" in report
     assert "has 0 bbox rows across the 23-image export" in report
     # Conflicts count + top examples.
     assert "Label conflicts resolved" in report

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 def clamped_box(W, H, cx, cy, w, h, pad_frac=0.15):
@@ -59,8 +59,13 @@ def largest_box(boxes):
 
 
 def crop_box(img_path, cx, cy, w, h, pad_frac=0.15):
-    """Open an image read-only, crop the clamped padded box, return RGB image."""
+    """Open an image read-only, crop the clamped padded box, return RGB image.
+
+    EXIF orientation is applied first (IN-07) so the box — defined in the
+    oriented view the annotator saw — is cut from matching pixels.
+    """
     with Image.open(img_path) as im:
+        im = ImageOps.exif_transpose(im)
         W, H = im.size
         box = clamped_box(W, H, cx, cy, w, h, pad_frac)
         return im.convert("RGB").crop(box)
@@ -74,10 +79,13 @@ def crop_row(record, row_id, crops_dir, img_path, pad_frac=0.15):
     is the bare filename — the caller prefixes its repo-relative directory.
     Degenerate zero-area bboxes raise ValueError (invalid-box: the caller
     counts it and the deterministic run continues, T-01-05); other failures
-    propagate to the caller's per-file guard.
+    propagate to the caller's per-file guard. EXIF orientation is applied
+    first (IN-07) for the same reason as :func:`crop_box` — a no-op for the
+    current dataset (all orientation tags are 1).
     """
     cx, cy, w, h = record.bbox
     with Image.open(img_path) as im:
+        im = ImageOps.exif_transpose(im)
         W, H = im.size
         box = clamped_box(W, H, cx, cy, w, h, pad_frac)
         cropped = im.convert("RGB").crop(box)

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 from imagehash import phash
-from PIL import Image
+from PIL import Image, ImageOps
 
 RF_HASH = re.compile(r"\.rf\.[0-9a-f]{32}$")  # Roboflow suffix per export naming
 
@@ -98,8 +98,14 @@ def phash_file(path) -> str:
 
     imagehash.phash defaults ARE the spec (RESEARCH.md lines 393-403):
     hash_size=8, highfreq_factor=4 -> 32x32 grayscale thumbnail, 64-bit hash.
+
+    EXIF orientation is applied first (IN-07): two visual duplicates carried
+    with different un-baked rotation tags would otherwise hash far apart and
+    evade dedup. A no-op for the current dataset (every orientation tag in
+    datasets/ is 1 — Roboflow re-exports bake rotation into the pixels).
     """
     with Image.open(path) as im:
+        im = ImageOps.exif_transpose(im)
         return str(phash(im.convert("RGB")))
 
 

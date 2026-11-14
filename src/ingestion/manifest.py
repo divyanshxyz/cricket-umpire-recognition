@@ -65,11 +65,11 @@ def assemble_rows(records, class_cfg: dict, roots=None) -> list[dict]:
             "crop_y0": "",
             "crop_x1": "",
             "crop_y1": "",
-            "crop_path": "",  # Plan 02 derives crop_{row_id}.jpg for Roboflow rows
+            "crop_path": "",  # Plan 02's crop stage fills crop_{row_id}.jpg for Roboflow rows
             "phash_hex": rec.phash_hex or "",
             "split": "",  # written EMPTY — Plan 03 assigns the stratified split AFTER dedup
-            "conflict": False,  # cluster-conflict flags arrive with Plan 02
-            "conflict_detail": "",
+            "conflict": bool(rec.conflict),  # cluster disagreed on the raw label
+            "conflict_detail": rec.conflict_detail or "",  # discarded labels
         })
     return rows
 

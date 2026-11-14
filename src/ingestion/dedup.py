@@ -17,6 +17,7 @@ output ordering is fully deterministic across runs.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -27,35 +28,69 @@ RF_HASH = re.compile(r"\.rf\.[0-9a-f]{32}$")  # Roboflow suffix per export namin
 
 
 def roboflow_stem(filename: str) -> str:
-    """Strip the '.rf.<32 hex>' Roboflow suffix from a filename stem.
+    """Strip the '.rf.<32 hex>' Roboflow suffix from a filename (or stem).
 
-    frame_0028_jpg.rf.4ab9... -> frame_0028_jpg. This is Roboflow's own
-    source-frame ID (Layer A grouping key), not a filename dedup key —
-    cross-source identity stays content-hash based.
+    frame_0028_jpg.rf.4ab9... -> frame_0028_jpg, for both the raw filename
+    ('...rf.<32hex>.jpg' — extension dropped first) and the extensionless
+    stem ('...rf.<32hex>' — the suffix ends the string). A 31-hex (or
+    otherwise non-32-hex) suffix never matches and is NOT stripped. This is
+    Roboflow's own source-frame ID (Layer A grouping key), not a filename
+    dedup key — cross-source identity stays content-hash based.
     """
-    stem = Path(filename).stem
-    return RF_HASH.sub("", stem)
+    text = str(filename)
+    if not RF_HASH.search(text):
+        text = Path(text).stem  # drop a trailing image extension (.jpg) first
+    return RF_HASH.sub("", text, count=1)
 
 
 def stem_groups(records):
     """Layer A: group Roboflow-family records by (source, stripped .rf stem).
 
-    SEAM STUB — Plan 02 wires this layer (one survivor per stripped stem,
-    lexicographically smallest relpath; removed records reported separately
-    from phash removals per RESEARCH.md Pitfall 1) behind this contract.
+    Roboflow exports bake N augmented copies of one source frame into the
+    tree (measured median pairwise Hamming 30 — phash at threshold 8 cannot
+    catch them, RESEARCH.md Pitfall 1), so this layer removes them first and
+    reports its removals SEPARATELY from phash removals. Non-Roboflow-family
+    records pass through untouched. Survivor within a group = lexicographic
+    smallest relpath (deterministic). Returns (survivors, removed).
     """
-    return [], []
+    groups: dict[tuple[str, str], list] = {}
+    passthrough: list = []
+    for rec in records:
+        if rec.family == "roboflow-yolo":
+            groups.setdefault((rec.source, roboflow_stem(rec.relpath)), []).append(rec)
+        else:
+            passthrough.append(rec)
+    survivors: list = []
+    removed: list = []
+    for key in sorted(groups):
+        members = sorted(groups[key], key=lambda r: r.relpath)
+        survivors.append(members[0])
+        removed.extend(members[1:])
+    survivors.extend(passthrough)
+    survivors.sort(key=lambda r: (r.source, r.relpath))
+    removed.sort(key=lambda r: (r.source, r.relpath))
+    return survivors, removed
 
 
 def resolve_cluster_labels(cluster_records):
     """Cluster-level label resolution (locked CONTEXT policy).
 
-    SEAM STUB — Plan 02 implements: higher priority tier wins across tiers;
-    majority label wins at equal tier (ties broken by lexicographic label
-    for determinism); conflict=True + discarded labels in the detail.
-    Returns (winner_raw_label, conflict, conflict_detail).
+    Higher priority tier wins across tiers; at equal tier the majority
+    raw_label wins, with ties broken by lexicographically smallest label
+    (deterministic). conflict=True when the cluster carried more than one
+    distinct raw label; conflict_detail lists the discarded labels (sorted,
+    semicolon-joined). Returns (winner_raw_label, conflict, conflict_detail).
     """
-    return "", False, ""
+    members = list(cluster_records)
+    labels = {r.raw_label for r in members}
+    top_tier = max(r.priority for r in members)
+    tier_members = [r for r in members if r.priority == top_tier]
+    counts = Counter(r.raw_label for r in tier_members)
+    winner = sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))[0][0]
+    discarded = sorted(str(label) for label in labels if label != winner)
+    conflict = len(labels) > 1
+    detail = "; ".join(discarded)
+    return winner, conflict, detail
 
 
 def phash_file(path) -> str:
@@ -90,8 +125,16 @@ def cluster_by_phash(records, threshold: int = 8):
     then lexicographically smallest relpath, then source (deterministic
     tiebreak on the (priority, relpath) contract).
 
+    Cluster labels resolve via the locked policy
+    (:func:`resolve_cluster_labels`): the survivor's raw_label becomes the
+    winning label and the survivor carries conflict=True + the discarded
+    labels in conflict_detail when the cluster disagreed. assemble_rows
+    re-maps raw_label -> canonical afterwards, so the manifest row carries
+    the resolved label.
+
     Returns (survivors, removed); a single-record union yields one survivor
-    cluster and zero removals.
+    cluster and zero removals. Keyed by content hash ONLY — never by
+    filename (CONTEXT locked decision).
     """
     records = list(records)
     n = len(records)
@@ -127,7 +170,12 @@ def cluster_by_phash(records, threshold: int = 8):
     survivors, removed = [], []
     for members in clusters.values():
         ordered = sorted(members, key=lambda r: (-r.priority, r.relpath, r.source))
-        survivors.append(ordered[0])
+        survivor = ordered[0]
+        winner, conflict, detail = resolve_cluster_labels(members)
+        survivor.raw_label = winner
+        survivor.conflict = conflict
+        survivor.conflict_detail = detail
+        survivors.append(survivor)
         removed.extend(ordered[1:])
     survivors.sort(key=lambda r: (r.source, r.relpath))
     removed.sort(key=lambda r: (r.source, r.relpath))

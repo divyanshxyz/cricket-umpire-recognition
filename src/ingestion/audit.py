@@ -16,13 +16,17 @@ from collections import Counter
 from .adapters import bbox_row_class_counts, decode_events, invalid_box_events
 
 
-def build_console_summary(source_rows, records, survivors, removed) -> str:
+def build_console_summary(source_rows, records, survivors, removed,
+                          stem_removed=None, crop_stats=None) -> str:
     """Build the console audit text (returned as one string; the CLI prints it).
 
     Sections: per-source [ok]/[warn] lines (parsed count vs on-disk census +
-    raw class names), duplicates removed, exclusions counted by raw label,
-    per-class post-dedup counts, decode-replacement events, and the tool
-    version (full parameter block lands in Plan 03's report file).
+    raw class names), duplicates removed (Layer A stem groups and Layer B
+    phash as SEPARATE lines — RESEARCH.md Pitfall 1), exclusions counted by
+    raw label, per-class post-dedup counts, decode-replacement events, and
+    the tool version (full parameter block lands in Plan 03's report file).
+    ``stem_removed``/``crop_stats`` are optional kwargs added by Plan 02;
+    the frozen 4-positional-arg contract is unchanged.
     """
     lines: list[str] = []
     lines.append("=== Phase 1 ingestion audit (walking skeleton) ===")
@@ -54,10 +58,20 @@ def build_console_summary(source_rows, records, survivors, removed) -> str:
         classes = ", ".join(vocab) if vocab else "-"
         lines.append(f"[{status}] {name:<24} {detail}  family={family}  classes: {classes}")
 
-    # Duplicates removed (Layer B phash clustering; Layer A arrives with Plan 02).
+    # Duplicates removed — two layers, separate audit lines (Pitfall 1:
+    # stem-dup and phash-dup removals must never be merged into one number).
+    stem_removed = stem_removed or []
     removed_by_source = Counter(r.source for r in removed)
+    stem_by_source = Counter(r.source for r in stem_removed)
     lines.append("")
-    lines.append(f"Duplicates removed (phash Hamming <= threshold): {len(removed)}")
+    lines.append(
+        f"Duplicates removed — Layer A Roboflow stem groups (.rf source-frame ID): {len(stem_removed)}"
+    )
+    for src in sorted(stem_by_source):
+        lines.append(f"  {src}: {stem_by_source[src]}")
+    lines.append(
+        f"Duplicates removed — Layer B phash (Hamming <= threshold, inclusive): {len(removed)}"
+    )
     for src in sorted(removed_by_source):
         lines.append(f"  {src}: {removed_by_source[src]}")
 
@@ -101,6 +115,21 @@ def build_console_summary(source_rows, records, survivors, removed) -> str:
             lines.append(f"  {cls:<12} {by_class[cls]:>5}")
     else:
         lines.append("  (none — every parsed record was excluded)")
+
+    # Crop stage (Plan 02): Roboflow survivors crop to crop_<row_id>.jpg.
+    if crop_stats is not None:
+        lines.append("")
+        if crop_stats.get("dry_run"):
+            lines.append(
+                f"Crops (dry-run — nothing written): Roboflow rows would be cropped, "
+                f"{crop_stats['non_roboflow']} non-Roboflow rows stay full-image"
+            )
+        else:
+            lines.append(
+                f"Crops (Roboflow survivors, crop_<row_id>.jpg): written {crop_stats['written']}, "
+                f"non-Roboflow full-image rows {crop_stats['non_roboflow']}, "
+                f"invalid/degenerate {crop_stats['invalid']}, failed {crop_stats['failed']}"
+            )
 
     # Environment/parameter trace (Pitfall 9: parameters written into the audit).
     lines.append("")

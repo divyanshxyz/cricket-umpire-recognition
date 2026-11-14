@@ -56,9 +56,12 @@ def map_label(raw_label, class_cfg: dict) -> tuple[str, str | None, str | None]:
     canonical to the conditional class name (LegBye/DeadBall, included only
     when the post-dedup count is strictly greater than 30 — Plan 03 audit);
     'excluded' sets exclude_reason. Unknown labels raise UnknownLabelError
-    naming the label — the caller adds the source context.
+    naming the label — the caller adds the source context. None and empty
+    labels are unknown too (normalize_label(None) would otherwise alias
+    str(None)=='none' onto the NoAction 'none' alias — an empty label is
+    never a default class).
     """
-    key = normalize_label(raw_label)
+    key = normalize_label("" if raw_label is None else raw_label)
     hit = (class_cfg.get("_alias") or {}).get(key)
     if hit is None:
         raise UnknownLabelError(

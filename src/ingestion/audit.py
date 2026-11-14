@@ -13,7 +13,7 @@ from __future__ import annotations
 import importlib.metadata
 from collections import Counter
 
-from .adapters import decode_events
+from .adapters import bbox_row_class_counts, decode_events, invalid_box_events
 
 
 def build_console_summary(source_rows, records, survivors, removed) -> str:
@@ -76,6 +76,20 @@ def build_console_summary(source_rows, records, survivors, removed) -> str:
         lines.append("  excluded as class: 0")
     lines.append(f"  conditional (LegBye/DeadBall >30 rule evaluated in Plan 03): {len(conditional)}")
     lines.append(f"  no_box: {len(no_box)}")
+    multibox = [r for r in records if r.multibox]
+    lines.append(
+        f"  multibox images (largest-area annotated box of any class kept): {len(multibox)}"
+    )
+    row_counts = bbox_row_class_counts()
+    if row_counts:
+        detail = ", ".join(f"{cls}: {n}" for cls, n in row_counts.items())
+        lines.append(
+            "  bbox rows seen by class (boxes carry the signal class; the crop rule selects "
+            f"the largest of any class): {detail}"
+        )
+    lines.append(
+        f"  invalid bbox rows rejected (out-of-range/malformed, ASVS V5): {len(invalid_box_events())}"
+    )
     lines.append(f"  unknown: {len(unknown)} (unknown labels abort the run — this stays 0)")
 
     # Per-class post-dedup counts.

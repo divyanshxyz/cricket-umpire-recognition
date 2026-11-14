@@ -1,21 +1,25 @@
 """Format-family adapters: parse every source into the uniform Record seam.
 
 RESEARCH.md Pattern 2 — nothing downstream sees format-specific code; each
-family parses into the same Record shape. ``parse_roboflow`` and
-``parse_folder_label`` ship as seam stubs; Plan 02 fills them behind this
-identical contract (additive, no renames).
+family parses into the same Record shape.
 
 Security (ASVS V5/V14, RESEARCH.md Security Domain): every label/text file is
 read via :func:`read_label_text` (utf-8, ``errors="replace"``) and each
 decode-replacement event is counted for the audit — never silently corrupted.
-``datasets/`` is read-only; adapters never write.
+Bbox floats are validated into [0, 1] before any math; malformed or
+out-of-range rows are counted via :func:`record_invalid_box` and dropped from
+box selection. ``datasets/`` is read-only; adapters never write.
 """
 
 from __future__ import annotations
 
 import re
+import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
 
 # Image extensions collected by the filename-label walker (plan contract).
 IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
@@ -37,6 +41,14 @@ _DECODE_EVENTS: list[int] = []
 # record_invalid_box.
 _INVALID_BOX: list[str] = []
 
+# Valid bbox rows seen while parsing, by class name (RESEARCH.md census
+# cross-check). The annotation boxes carry the signal class — including the
+# single umpire-class row across 2,497 roboflow_umpire_wide images, which the
+# largest-area crop rule never selects (it loses the area contest in its
+# multibox file) — so the audit logs this distribution explicitly and the
+# umpire row is never silently dropped.
+_BOX_ROW_CLASSES: Counter = Counter()
+
 
 def decode_events() -> int:
     """Number of decode-replacement events observed while reading label files."""
@@ -51,6 +63,11 @@ def record_invalid_box(path, line_no: int, reason: str) -> None:
 def invalid_box_events() -> list[str]:
     """Invalid bbox row records (one string per rejected row)."""
     return list(_INVALID_BOX)
+
+
+def bbox_row_class_counts() -> dict[str, int]:
+    """Valid bbox rows seen while parsing, by class name (sorted; audit census)."""
+    return dict(sorted(_BOX_ROW_CLASSES.items()))
 
 
 def read_label_text(path) -> str:
@@ -139,21 +156,154 @@ def parse_filename_label(root, family: str, priority: int) -> list[Record]:
 def parse_roboflow(root, family: str, priority: int) -> list[Record]:
     """Parse a Roboflow YOLOv8 export into Records.
 
-    SEAM STUB — Plan 02 fills this parser (yaml.safe_load of data.yaml names,
-    labels/*.txt parsed to the largest-area box with floats validated into
-    [0, 1], zero-box -> outcome no_box, split0 from the train/valid/test dir)
-    behind this identical contract. The dispatch and Record shape are real,
-    so filling it changes nothing downstream.
+    ``yaml.safe_load`` reads the export's data.yaml names list verbatim (no
+    regex over YAML). Each split dir (train/valid/test, fixed order) pairs
+    ``images/<split>/<stem>.jpg`` with the sibling ``labels/<split>/<stem>.txt``
+    by stem; the split dir name is recorded as ``split0`` metadata ONLY — a
+    source's own split never determines the manifest split column (Plan 03
+    assigns the stratified split after dedup).
+
+    Label rows parse as whitespace-separated ``class cx cy w h`` floats
+    validated into [0, 1] (NaN/inf fail the range check); malformed or
+    out-of-range rows are counted via :func:`record_invalid_box` and dropped
+    from box selection — never silently passed. Zero valid rows -> ``outcome
+    no_box`` (the image is still counted, excluded from class rows).
+
+    Otherwise ONE record per image: the largest-area annotated box of ANY
+    class wins (w*h in normalized space) — the research-driven adjustment of
+    the CONTEXT 'largest umpire box' decision, because the annotation boxes
+    carry the signal class (the umpire class has exactly 1 bbox row across
+    2,497 roboflow_umpire_wide images while four/no_action/six/out/wide carry
+    798/926/283/259/250). ``raw_label``/``box_class`` = the selected box's
+    class; ``multibox`` flags files with >1 row; an umpire-class selection
+    lands as excluded in the canonical stage where the audit logs it
+    explicitly.
     """
-    return []
+    root = Path(root)
+    data_yaml = root / "data.yaml"
+    if not data_yaml.is_file():
+        sys.exit(
+            f"[roboflow] {root}: data.yaml not found — expected a Roboflow "
+            "YOLOv8 export layout (data.yaml + train/valid/test with images/ + labels/)"
+        )
+    meta = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+    names = meta.get("names")
+    if not isinstance(names, list) or not names:
+        sys.exit(
+            f"[roboflow] {root}: data.yaml has no 'names' list — cannot map "
+            "class indices; check the export"
+        )
+    records: list[Record] = []
+    for split in ("train", "valid", "test"):
+        img_dir = root / split / "images"
+        lbl_dir = root / split / "labels"
+        if not img_dir.is_dir():
+            continue
+        for img in sorted(img_dir.iterdir()):
+            if not img.is_file() or img.suffix.lower() not in IMAGE_EXTS:
+                continue
+            rel = img.relative_to(root).as_posix()
+            box, box_class, multibox = _parse_label_boxes(
+                lbl_dir / f"{img.stem}.txt", names
+            )
+            if box is None:
+                records.append(
+                    Record(
+                        source="",
+                        relpath=rel,
+                        family=family,
+                        priority=priority,
+                        raw_label=None,
+                        split0=split,
+                        multibox=multibox,
+                        outcome="no_box",
+                    )
+                )
+            else:
+                records.append(
+                    Record(
+                        source="",
+                        relpath=rel,
+                        family=family,
+                        priority=priority,
+                        raw_label=box_class,
+                        split0=split,
+                        bbox=box,
+                        box_class=box_class,
+                        multibox=multibox,
+                    )
+                )
+    return records
+
+
+def _parse_label_boxes(lbl_path, names) -> tuple[tuple | None, str | None, bool]:
+    """Parse one YOLO label file -> (largest_box, box_class, multibox).
+
+    Returns (None, None, multibox) when the file has zero valid rows (missing
+    file, or every row malformed/out-of-range — those are counted via
+    :func:`record_invalid_box`). ``multibox`` is True when the file had >1
+    (non-empty) row. Ties on area resolve to the first row in file order —
+    deterministic.
+    """
+    total_rows = 0
+    valid: list[tuple[tuple, str]] = []
+    if Path(lbl_path).is_file():
+        text = read_label_text(lbl_path)
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            total_rows += 1
+            parts = line.split()
+            if len(parts) != 5:
+                record_invalid_box(
+                    lbl_path, line_no, f"expected 5 tokens 'class cx cy w h', got {len(parts)}"
+                )
+                continue
+            try:
+                idx = int(parts[0])
+                cx, cy, w, h = (float(v) for v in parts[1:5])
+            except ValueError:
+                record_invalid_box(lbl_path, line_no, f"non-numeric token in {parts!r}")
+                continue
+            if not (0.0 <= cx <= 1.0 and 0.0 <= cy <= 1.0 and 0.0 <= w <= 1.0 and 0.0 <= h <= 1.0):
+                record_invalid_box(lbl_path, line_no, f"values outside [0,1]: {parts[1:]!r}")
+                continue
+            if not (0 <= idx < len(names)):
+                record_invalid_box(lbl_path, line_no, f"class index {idx} out of range")
+                continue
+            _BOX_ROW_CLASSES[str(names[idx])] += 1
+            valid.append(((cx, cy, w, h), str(names[idx])))
+    if not valid:
+        return None, None, total_rows > 1
+    box, box_class = max(valid, key=lambda item: item[0][2] * item[0][3])
+    return box, box_class, total_rows > 1
 
 
 def parse_folder_label(root, family: str, priority: int) -> list[Record]:
     """Parse a folder-labeled source tree into Records.
 
-    SEAM STUB — Plan 02 fills this parser (nearest parent folder is the raw
-    label, resolved nearest-to-farthest; split0 from train/test/validate dirs
-    recorded as metadata only) behind this identical contract. The dispatch
-    and Record shape are real, so filling it changes nothing downstream.
+    Sorted walk over .jpg/.jpeg/.png under the root (archive1 layout:
+    train/test/validate/{class}/). ``raw_label`` = the image's immediate
+    parent directory name (the class dir); ``split0`` = the grandparent split
+    dir name when present (>= 3 path parts) — metadata only, never the split
+    source. No bbox: folder sources carry no annotations, so crop coords stay
+    blank and no crop is written (full-image rows).
     """
-    return []
+    root = Path(root)
+    records: list[Record] = []
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in IMAGE_EXTS:
+            continue
+        rel = p.relative_to(root)
+        split0 = rel.parent.parent.name if len(rel.parts) >= 3 else None
+        records.append(
+            Record(
+                source="",
+                relpath=rel.as_posix(),
+                family=family,
+                priority=priority,
+                raw_label=rel.parent.name,
+                split0=split0,
+            )
+        )
+    return records

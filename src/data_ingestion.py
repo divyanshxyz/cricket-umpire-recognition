@@ -91,13 +91,15 @@ def main(argv=None) -> int:
 
     # 3. CANONICAL MAP — unknown label is a hard abort naming label + source.
     for rec in records:
-        if rec.raw_label is None:
+        if rec.raw_label is None and rec.outcome != "no_box":
             sys.exit(
                 f"[canonical] record with no raw label: {rec.source}/{rec.relpath} "
                 f"(family {rec.family}) — adapter must set raw_label or outcome no_box"
             )
     try:
         for rec in records:
+            if rec.outcome == "no_box":
+                continue  # pre-set by the adapter (zero valid bbox rows); audit counts it
             rec.outcome, rec.canonical, rec.exclude_reason = map_label(rec.raw_label, class_cfg)
     except UnknownLabelError as err:
         sys.exit(f"[canonical] {err}")

@@ -96,7 +96,8 @@ class ExtractionFailure:
     """Typed extraction failure (never an exception escaping the call).
 
     ``reason`` is one of the closed set: "no_person" | "no_keypoints" |
-    "keypoints_without_confidence" | "decode_error". ``detail`` names what
+    "keypoints_without_confidence" | "decode_error" |
+    "no_person_in_sequence" (whole-sequence failure). ``detail`` names what
     was seen and the fix (canonical.py error-message style).
     """
 
@@ -186,15 +187,199 @@ def raw_features(kpts_detected):
     return np.asarray(kpts_detected, dtype=np.float32).reshape(-1)
 
 
-def engineered_features(kpts_masked):
-    """59-D engineered vector slot: 17 x (torso-normalized x_hat, y_hat,
-    conf) + 8 geometry features [elbow_l, elbow_r, elev_l, elev_r,
-    wristnose_l, wristnose_r, span, symmetry]. Task 3 fills this slot with
-    the real math (torso fallback chain + authored geometry formulas); the
-    (59,) float32 slot contract is real now, so the fill is purely additive
-    with no signature or call-site architectural change."""
-    del kpts_masked  # unused until Task 3 fills the slot
-    return np.zeros(59, dtype=np.float32)
+def torso_scale(kpts_masked, mask_conf: float = 0.20):
+    """Torso scale fallback chain (CONTEXT locked; zero-length scales
+    (<= 1e-6) fall through to the next stage):
+
+    1. all four of L/R shoulder (COCO 5/6) and L/R hip (COCO 11/12) conf
+       >= mask_conf -> norm(mid_shoulder - mid_hip) as ("torso", s);
+    2. otherwise both shoulders visible (EITHER hip conf < mask_conf, or
+       the torso length is degenerate) -> shoulder-width norm as
+       ("shoulder_width", s);
+    3. otherwise (1.0, "unit") plus a record_scale_warning entry — the
+       CONTEXT 'logged warning' for the unit-scale fallback.
+
+    Returns (scale, source). Pure math except the terminal-warning event
+    record (the module-level recorder is the sanctioned side channel, so
+    the weight-free test can assert the warning fires).
+    """
+    kpts = np.asarray(kpts_masked, dtype=np.float64)
+    sh_ok = bool(
+        kpts[L_SHOULDER, 2] >= mask_conf and kpts[R_SHOULDER, 2] >= mask_conf
+    )
+    hip_ok = bool(kpts[L_HIP, 2] >= mask_conf and kpts[R_HIP, 2] >= mask_conf)
+    if hip_ok and sh_ok:
+        mid_sh = (kpts[L_SHOULDER, :2] + kpts[R_SHOULDER, :2]) / 2.0
+        mid_hip = (kpts[L_HIP, :2] + kpts[R_HIP, :2]) / 2.0
+        s = float(np.linalg.norm(mid_sh - mid_hip))
+        if s > _SCALE_MIN:
+            return s, "torso"
+    if sh_ok:
+        s = float(np.linalg.norm(kpts[L_SHOULDER, :2] - kpts[R_SHOULDER, :2]))
+        if s > _SCALE_MIN:
+            return s, "shoulder_width"
+    record_scale_warning(
+        "torso_scale",
+        "torso and shoulder-width scales both unusable — falling back to "
+        "scale=1.0 (unit); masked coords are 0 anyway",
+    )
+    return 1.0, "unit"
+
+
+def _angle_deg(v1, v2):
+    """Angle at a vertex between vectors v1 and v2 via arctan2(|cross|, dot)
+    — degrees in [0, 180] by construction (authored [ASSUMED] A1 formula)."""
+    cross = v1[0] * v2[1] - v1[1] * v2[0]
+    dot = v1[0] * v2[0] + v1[1] * v2[1]
+    return float(np.degrees(np.arctan2(abs(cross), dot)))
+
+
+def _geometry_features(kpts, scale, mask_conf):
+    """The 8 geometry features in the frozen order [elbow_l, elbow_r,
+    elev_l, elev_r, wristnose_l, wristnose_r, span, symmetry] using the
+    authored [ASSUMED] A1 formulas: elbow angle at the elbow vertex between
+    (shoulder - elbow) and (wrist - elbow) via arctan2(|cross|, dot) in
+    degrees; elevation = (shoulder_y - wrist_y)/scale (positive when the
+    wrist is above the shoulder); wrist-vs-nose = (nose_y - wrist_y)/scale
+    (positive when the wrist is above the nose); span = (max x - min x over
+    conf-visible keypoints)/scale; symmetry = |y_Lwrist - y_Rwrist|/scale.
+
+    Any term computed from a keypoint pair with conf < mask_conf yields the
+    0.0 sentinel — never NaN (researcher disposition 2). Visible-mask
+    definition: conf >= mask_conf (the exact-0.20 boundary)."""
+    vis = kpts[:, 2] >= mask_conf
+    elbow_l = (
+        _angle_deg(
+            kpts[L_SHOULDER, :2] - kpts[L_ELBOW, :2],
+            kpts[L_WRIST, :2] - kpts[L_ELBOW, :2],
+        )
+        if (vis[L_SHOULDER] and vis[L_ELBOW] and vis[L_WRIST])
+        else 0.0
+    )
+    elbow_r = (
+        _angle_deg(
+            kpts[R_SHOULDER, :2] - kpts[R_ELBOW, :2],
+            kpts[R_WRIST, :2] - kpts[R_ELBOW, :2],
+        )
+        if (vis[R_SHOULDER] and vis[R_ELBOW] and vis[R_WRIST])
+        else 0.0
+    )
+    elev_l = (
+        (kpts[L_SHOULDER, 1] - kpts[L_WRIST, 1]) / scale
+        if (vis[L_SHOULDER] and vis[L_WRIST])
+        else 0.0
+    )  # positive when the wrist is above the shoulder
+    elev_r = (
+        (kpts[R_SHOULDER, 1] - kpts[R_WRIST, 1]) / scale
+        if (vis[R_SHOULDER] and vis[R_WRIST])
+        else 0.0
+    )
+    wristnose_l = (
+        (kpts[NOSE, 1] - kpts[L_WRIST, 1]) / scale
+        if (vis[NOSE] and vis[L_WRIST])
+        else 0.0
+    )  # positive when the wrist is above the nose
+    wristnose_r = (
+        (kpts[NOSE, 1] - kpts[R_WRIST, 1]) / scale
+        if (vis[NOSE] and vis[R_WRIST])
+        else 0.0
+    )
+    if vis.any():
+        vis_x = kpts[vis, 0]
+        span = float(vis_x.max() - vis_x.min()) / scale
+    else:
+        span = 0.0  # no visible keypoints — 0.0 sentinel, not NaN
+    symmetry = (
+        abs(kpts[L_WRIST, 1] - kpts[R_WRIST, 1]) / scale
+        if (vis[L_WRIST] and vis[R_WRIST])
+        else 0.0
+    )
+    return np.array(
+        [elbow_l, elbow_r, elev_l, elev_r, wristnose_l, wristnose_r, span, symmetry],
+        dtype=np.float64,
+    )
+
+
+def engineered_features(kpts_masked, scale, mask_conf: float = 0.20):
+    """59-D engineered vector (float32): 17 x (torso-normalized x_hat,
+    y_hat, conf) from the MASKED keypoints (masked entries stay 0.0 because
+    their x/y are zeroed, conf is preserved unnormalized) + the 8 geometry
+    features in the frozen order [elbow_l, elbow_r, elev_l, elev_r,
+    wristnose_l, wristnose_r, span, symmetry] (must_haves truth 11)."""
+    kpts = np.asarray(kpts_masked, dtype=np.float64)
+    scale = float(scale)
+    normalized = np.empty_like(kpts)
+    normalized[:, :2] = kpts[:, :2] / scale
+    normalized[:, 2] = kpts[:, 2]
+    geometry = _geometry_features(kpts, scale, mask_conf)
+    return np.concatenate([normalized.reshape(-1), geometry]).astype(np.float32)
+
+
+def velocity_features(prev_xy, cur_xy, scale):
+    """Frame-to-frame velocity (8,) float32: (cur - prev) for VELOCITY_JOINTS
+    (COCO 7,8,9,10 — L/R elbow, L/R wrist) divided by the CURRENT frame's
+    torso scale, flattened (dx, dy) per joint order. Computed from the
+    stored masked coords as-is [A4] — deltas crossing a masked frame are
+    deterministic but semantically degraded; downstream conf columns let
+    models downweight them. prev_xy / cur_xy: (17, 2) masked pixel coords."""
+    prev = np.asarray(prev_xy, dtype=np.float64).reshape(17, -1)[:, :2]
+    cur = np.asarray(cur_xy, dtype=np.float64).reshape(17, -1)[:, :2]
+    joints = list(VELOCITY_JOINTS)
+    delta = cur[joints] - prev[joints]  # (4, 2): (dx, dy) per joint order
+    return (delta / float(scale)).astype(np.float32).reshape(-1)
+
+
+def assemble_sequence(per_frame_rows):
+    """Pure (T, 118) sequence assembly — weight-free testable.
+
+    per_frame_rows: one entry per frame, either a success 4-tuple
+    (raw51, eng59, scale, masked_xy) — masked_xy is that frame's masked
+    (17, 2) pixel coords, which become the NEXT frame's prev — or a failure
+    pair (None, ExtractionFailure) exactly as extract() returns it.
+
+    Row layout (frozen, CONTEXT D14): columns [0:51] raw, [51:110]
+    engineered, [110:118] velocity; the first frame's velocity is zeros(8),
+    frame i > 0 uses velocity_features(prev, cur, frame i's scale). T is
+    returned as-is — padding/truncating to 15 is Plan 02's pad_or_truncate,
+    not this function.
+
+    Whole-sequence failure (researcher disposition 1 / A10): ANY failure row
+    fails the whole sequence — recorded, then (None,
+    ExtractionFailure("no_person_in_sequence", ...)) naming the failing
+    frame index. No zero-feature rows are ever emitted.
+    """
+    feature_rows = []
+    prev_xy = None
+    for frame_idx, row in enumerate(per_frame_rows):
+        if row is None or (len(row) == 2 and row[0] is None):
+            failure = (
+                row[1]
+                if row is not None
+                else ExtractionFailure("no_person", "frame produced no result")
+            )
+            record_failure(f"sequence_frame_{frame_idx}", failure.reason)
+            return None, ExtractionFailure(
+                "no_person_in_sequence",
+                f"frame {frame_idx} failed extraction ({failure.reason}): "
+                f"{failure.detail} — the sequence fails as a whole, no "
+                "zero-feature rows (researcher disposition 1)",
+            )
+        raw, eng, scale, masked_xy = row
+        if prev_xy is None:
+            velocity = np.zeros(8, dtype=np.float32)
+        else:
+            velocity = velocity_features(prev_xy, masked_xy, scale)
+        feature_rows.append(
+            np.concatenate(
+                [
+                    np.asarray(raw, dtype=np.float32),
+                    np.asarray(eng, dtype=np.float32),
+                    velocity,
+                ]
+            )
+        )
+        prev_xy = masked_xy
+    return np.stack(feature_rows, axis=0), None
 
 
 class PoseFeatureExtractor:
@@ -288,7 +473,39 @@ class PoseFeatureExtractor:
             record_failure(source_label, failure.reason)
             return None, failure
         kpts_detected = kpts_all[person_idx]
-        kpts_masked = mask_keypoints(kpts_detected, float(self.config["mask_conf"]))
+        mask_conf = float(self.config["mask_conf"])
+        kpts_masked = mask_keypoints(kpts_detected, mask_conf)
         raw = raw_features(kpts_detected)
-        eng = engineered_features(kpts_masked)
+        scale, _source = torso_scale(kpts_masked, mask_conf)
+        eng = engineered_features(kpts_masked, scale, mask_conf)
         return raw, eng
+
+    def extract_sequence_features(self, frames):
+        """frames (list of BGR HWC uint8 ndarrays — the cv2.VideoCapture
+        frame contract) -> (T, 118) float32 via the pure assemble_sequence,
+        or (None, ExtractionFailure("no_person_in_sequence", ...)) naming
+        the first failing frame index. Reuses self.extract per frame (same
+        extractor, RESEARCH.md contract) and derives each frame's masked
+        coords + torso scale from the returned raw vector with the same
+        pure math extract() used — exactly one model call per frame."""
+        if not frames:
+            failure = ExtractionFailure(
+                "no_person_in_sequence",
+                "empty frames list — nothing to extract (ASVS V5: rejected "
+                "and counted, never silently defaulted)",
+            )
+            record_failure("empty_sequence", failure.reason)
+            return None, failure
+        mask_conf = float(self.config["mask_conf"])
+        per_frame_rows = []
+        for frame in frames:
+            raw, payload = self.extract(frame)
+            if raw is None:
+                per_frame_rows.append((None, payload))  # (None, ExtractionFailure)
+                continue
+            kpts_masked = mask_keypoints(
+                np.asarray(raw, dtype=np.float64).reshape(17, 3), mask_conf
+            )
+            scale, _source = torso_scale(kpts_masked, mask_conf)
+            per_frame_rows.append((raw, payload, scale, kpts_masked[:, :2]))
+        return assemble_sequence(per_frame_rows)

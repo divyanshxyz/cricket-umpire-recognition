@@ -53,6 +53,28 @@ def test_real_manifest_image_end_to_end():
     assert engineered.dtype == np.float32
     assert raw.any()  # raw vector from a real detection is not all-zero
     assert np.isfinite(raw).all()
+    # Task 3 proof: the engineered slot is filled with the real math —
+    # NOT the all-zero stub — and stays finite on a real detection.
+    assert engineered.any()
+    assert np.isfinite(engineered).all()
+
+
+def test_real_image_three_frame_sequence_contract():
+    # The same real image passed 3 times: identical frames -> identical
+    # keypoints -> the velocity block [110:118] is exactly zero, and the
+    # frozen (T, 118) column layout holds end-to-end with no typed failure.
+    extractor = PoseFeatureExtractor()
+    _, image_path = _first_manifest_image()
+    image = cv2.imread(str(image_path))
+    assert image is not None, f"cv2.imread failed on {image_path}"
+    seq, failure = extractor.extract_sequence_features([image, image, image])
+    assert failure is None  # typed-failure absence
+    assert seq.shape == (3, 118)
+    assert seq.dtype == np.float32
+    assert np.isfinite(seq).all()
+    assert (seq[:, 110:118] == 0.0).all()  # identical frames -> zero deltas
+    assert (seq[0, 0:51] == seq[1, 0:51]).all()  # deterministic repeat rows
+    assert (seq[0, 51:110] == seq[1, 51:110]).all()
 
 
 def test_blank_image_returns_typed_no_person_failure():

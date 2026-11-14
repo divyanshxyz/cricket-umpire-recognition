@@ -28,29 +28,35 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-SRC_DIR = Path(__file__).resolve().parent
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+# Import the pipeline package through the SAME 'src.ingestion' spelling the
+# test suite uses (conftest.py puts the checkout root on sys.path). The old
+# 'ingestion.*' spelling created a second module object for the same files
+# (IN-03), so any process importing both — e.g. a test importing this CLI —
+# would split the module-level audit counters in adapters.py (decode /
+# invalid-box / bbox-row census) and silently under-count them.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import yaml
 from tqdm import tqdm
 
-from ingestion.adapters import (
+from src.ingestion.adapters import (
     parse_filename_label,
     parse_folder_label,
     parse_roboflow,
     stamp_source,
 )
-from ingestion.audit import (
+from src.ingestion.audit import (
     DEFAULT_PARAMS,
     build_audit_report,
     build_console_summary,
 )
-from ingestion.canonical import UnknownLabelError, load_class_map, map_label
-from ingestion.crops import crop_row
-from ingestion.dedup import cluster_by_phash, phash_file, stem_groups
-from ingestion.discover import discover_sources
-from ingestion.manifest import (
+from src.ingestion.canonical import UnknownLabelError, load_class_map, map_label
+from src.ingestion.crops import crop_row
+from src.ingestion.dedup import cluster_by_phash, phash_file, stem_groups
+from src.ingestion.discover import discover_sources
+from src.ingestion.manifest import (
     assemble_rows,
     assign_split,
     evaluate_conditional,

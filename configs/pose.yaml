@@ -1,0 +1,12 @@
+# Pose feature seam config for the Phase 2 PoseFeatureExtractor: detection /
+# masking thresholds, inference size, weights path, and device. Values are the
+# locked Phase 2 CONTEXT decisions; POSE_DEFAULTS in src/pose_features.py is
+# the merged single source (IN-02) and every value flows into the features
+# param block (Plan 02 build).
+
+params:
+  det_conf: 0.25        # person-detection threshold (ultralytics default; locked CONTEXT decision)
+  mask_conf: 0.20       # keypoint masking boundary: conf < mask_conf zeroes x/y, conf is preserved
+  imgsz: 640            # inference size (ultralytics default; frozen for the build)
+  weights_path: models/yolov8n-pose.pt  # explicit path — never a bare-name load (bare names download to CWD)
+  device: cpu           # frozen-build device (device-dependent-artifact anti-pattern); code stays device-agnostic

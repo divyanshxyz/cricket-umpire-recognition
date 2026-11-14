@@ -1,9 +1,12 @@
 #!/usr/bin/env python
 """Phase 1 ingestion CLI coordinator.
 
-Stage order per the RESEARCH.md architecture diagram:
-discover -> parse -> canonical -> dedup (two layers) -> crop survivors ->
-conditional >30 evaluation -> split (guarded, AFTER dedup) -> leak check ->
+Stage order per the RESEARCH.md architecture diagram, with the crop stage
+moved AFTER the leak check (WR-04 — the split guard and leak check can still
+abort the run by design, and writing crops before them would strand stale
+crop files on every abort):
+discover -> parse -> canonical -> dedup (two layers) -> conditional >30
+evaluation -> split (guarded, AFTER dedup) -> leak check -> crop survivors ->
 write artifacts (manifest.csv + reports/dedup_audit.md) -> audit (console
 summary + the full report printed AND written — INGEST-07). --dry-run runs
 everything in memory and writes nothing (the crop stage counts would-be
@@ -20,6 +23,7 @@ Flags:
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from collections import Counter
 from pathlib import Path
@@ -139,11 +143,10 @@ def main(argv=None) -> int:
             sys.exit(f"[phash] failed on {rec.source}/{rec.relpath}: {err}")
     survivors, removed = cluster_by_phash(stem_survivors, threshold=threshold)
 
-    # 5. MANIFEST + CROPS — rows from post-dedup survivors (row IDs are the
-    #    stable crop-name source, so the crop stage runs after row assembly
-    #    and before the write; research diagram order: dedup -> crop
-    #    survivors -> manifest). Only Roboflow rows carry a bbox; every other
-    #    family stays a full-image row with blank crop fields, no copy made.
+    # 5. MANIFEST ROWS — rows from post-dedup survivors (row IDs are the
+    #    stable crop-name source, consumed by the crop stage in 7b below).
+    #    Only Roboflow rows carry a bbox; every other family stays a
+    #    full-image row with blank crop fields, no copy made.
     rows = assemble_rows(survivors, class_cfg, roots=roots)
     ordered = sorted(survivors, key=lambda r: (r.source, r.relpath))
 
@@ -172,39 +175,6 @@ def main(argv=None) -> int:
         rows = [rows[i] for i in keep_idx]
         ordered = [ordered[i] for i in keep_idx]
 
-    crops_rel = str(paths_cfg["outputs"]["crops_dir"]).replace("\\", "/").rstrip("/")
-    pad_frac = float(params.get("pad_frac", 0.15))
-    crop_stats = {
-        "written": 0,
-        "non_roboflow": 0,
-        "invalid": 0,
-        "failed": 0,
-        "dry_run": bool(args.dry_run),
-    }
-    for row, rec in zip(rows, ordered):
-        if rec.family != "roboflow-yolo" or rec.bbox is None:
-            crop_stats["non_roboflow"] += 1
-            continue
-        if args.dry_run:
-            continue  # nothing written; the survivor still counts as would-crop
-        try:
-            res = crop_row(
-                rec,
-                row["row_id"],
-                base / paths_cfg["outputs"]["crops_dir"],
-                img_path=base / roots[rec.source] / rec.relpath,
-                pad_frac=pad_frac,
-            )
-        except ValueError:
-            crop_stats["invalid"] += 1  # degenerate zero-area box — invalid row
-            continue
-        except Exception as err:  # per-file guard: count and continue (T-01-05)
-            print(f"[crop] failed on {rec.source}/{rec.relpath}: {err}")
-            crop_stats["failed"] += 1
-            continue
-        row.update(res)
-        row["crop_path"] = f"{crops_rel}/{res['crop_path']}" if crops_rel else res["crop_path"]
-        crop_stats["written"] += 1
     # 6. SPLIT — guarded stratified 80/20 assigned ONLY after dedup and the
     #    conditional evaluation (RESEARCH.md diagram box 6). The min-class
     #    guard pre-empts sklearn's two cryptic stratify failure modes with a
@@ -229,6 +199,60 @@ def main(argv=None) -> int:
             f"[leak-check] cross-split phash pairs at Hamming <= {threshold}: "
             f"{leaks} — dedup invariant broken; refusing to write the manifest"
         )
+
+    # 7b. CROPS — Roboflow survivors crop to crop_<row_id>.jpg, written only
+    #     AFTER the abortable split guard (step 6, SystemExit on the
+    #     collect-more contingency) and the leak check (step 7) have passed
+    #     (WR-04). Safe to reorder: a crop depends only on its row_id and the
+    #     survivor's bbox — never on the split. Every non-dry-run starts the
+    #     stage by CLEARING crops_dir, so the directory exactly mirrors this
+    #     run's manifest: row_ids are positional ({source}_{i:05d}), so after
+    #     data drift a run would otherwise overwrite some crops and strand
+    #     the rest as ghost images for directory-scanning consumers.
+    crops_rel = str(paths_cfg["outputs"]["crops_dir"]).replace("\\", "/").rstrip("/")
+    pad_frac = float(params.get("pad_frac", 0.15))
+    crop_stats = {
+        "written": 0,
+        "non_roboflow": 0,
+        "invalid": 0,
+        "failed": 0,
+        "dry_run": bool(args.dry_run),
+    }
+    crops_abs = base / paths_cfg["outputs"]["crops_dir"]
+    if not args.dry_run:
+        try:
+            if crops_abs.exists():
+                shutil.rmtree(crops_abs)  # crops_dir is pipeline-owned output
+            crops_abs.mkdir(parents=True, exist_ok=True)
+        except OSError as err:
+            raise SystemExit(
+                f"[crops] cannot reset {crops_abs}: {err} — refusing to write "
+                "crops into a directory this run cannot fully regenerate"
+            )
+    for row, rec in zip(rows, ordered):
+        if rec.family != "roboflow-yolo" or rec.bbox is None:
+            crop_stats["non_roboflow"] += 1
+            continue
+        if args.dry_run:
+            continue  # nothing written; the survivor still counts as would-crop
+        try:
+            res = crop_row(
+                rec,
+                row["row_id"],
+                crops_abs,
+                img_path=base / roots[rec.source] / rec.relpath,
+                pad_frac=pad_frac,
+            )
+        except ValueError:
+            crop_stats["invalid"] += 1  # degenerate zero-area box — invalid row
+            continue
+        except Exception as err:  # per-file guard: count and continue (T-01-05)
+            print(f"[crop] failed on {rec.source}/{rec.relpath}: {err}")
+            crop_stats["failed"] += 1
+            continue
+        row.update(res)
+        row["crop_path"] = f"{crops_rel}/{res['crop_path']}" if crops_rel else res["crop_path"]
+        crop_stats["written"] += 1
 
     # 8. WRITE ARTIFACTS (full run): manifest.csv; crops were written by the
     #    crop stage above. --dry-run writes NOTHING.

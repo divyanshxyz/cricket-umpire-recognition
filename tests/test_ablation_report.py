@@ -28,6 +28,7 @@ training, no real artifacts. Pinned contracts:
 """
 
 import re
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -100,7 +101,8 @@ def _render(metrics, meta=None, probe=None, verdict=None, models_dir=None):
     return _ablation_report_text(
         _synth_census(), metrics, meta or {}, probe,
         verdict if verdict is not None else compute_verdict(metrics),
-        334, LE, _synth_lineage(), models_dir,
+        334, LE, _synth_lineage(),
+        models_dir if models_dir is not None else Path("."),
     )
 
 
@@ -228,6 +230,24 @@ def test_probe_absent_renders_explicit_marker():
     assert "not run this run" in text
 
 
+def test_probe_canary_finding_renders_when_unaugmented_beats_augmented():
+    # The flagged assumption (plan frontmatter): if the unaugmented probe
+    # matches or beats augmented Model A, the report SAYS SO as a finding
+    # on the flip/jitter assumptions — never a re-tune trigger.
+    a = _synth_metrics(0)
+    a["f1_macro"] = 0.7227
+    probe = {"accuracy": 0.7857, "f1_macro": 0.7822}
+    text = _render({"A": a}, probe=probe)
+    assert "FINDING: the unaugmented probe MATCHES OR BEATS augmented" in text
+    assert "macro-F1 0.7822 vs 0.7227" in text
+
+    # Probe strictly below augmented -> no finding line.
+    a2 = _synth_metrics(1)
+    a2["f1_macro"] = 0.9
+    text2 = _render({"A": a2}, probe={"accuracy": 0.5, "f1_macro": 0.4})
+    assert "FINDING:" not in text2
+
+
 # ---------------------------------------------------------------------------
 # (e) Timestamp-free rendering
 # ---------------------------------------------------------------------------
@@ -246,7 +266,8 @@ def test_report_renders_no_wall_clock_timestamps():
 
 
 def test_artifact_sha256_lines_render_for_existing_artifacts(tmp_path):
-    for name in ("baseline_ann.pt", "pose_mlp.pt", "ensemble_model.joblib"):
+    for name in ("baseline_ann.pt", "pose_mlp.pt", "ensemble_model.joblib",
+                 "label_encoder.joblib"):
         (tmp_path / name).write_bytes(b"artifact-bytes-" + name.encode())
     metrics = {"A": _synth_metrics(0), "B": _synth_metrics(1),
                "D": _synth_metrics(2)}

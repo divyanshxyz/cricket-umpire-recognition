@@ -299,7 +299,7 @@ class MiliBaseline(nn.Module):
         return self.net(x)
 
 
-def train_baseline(X_train_raw, y_int, le, seed: int = 42):
+def train_baseline(X_train_raw, y_int, le, seed: int = 42, augment: bool = True):
     """Model A training entry (TRAIN-03).
 
     MinMaxScaler() default (no clip — exact-reproduction semantics per the
@@ -311,6 +311,12 @@ def train_baseline(X_train_raw, y_int, le, seed: int = 42):
     RESEARCH A2) and plain CrossEntropyLoss (Model A UNWEIGHTED — only
     Model C carries class weights, locked CONTEXT decision).
 
+    augment=False (Plan 03-03's ONE augmentation probe) runs the SAME
+    path with train_with_cv's augment_fn=None — identical folds (the
+    seeded splitter is deterministic), the same early stopping and the
+    same final-epochs derivation, just no flip/jitter — isolating the
+    augmentation effect without touching the main-table Model A.
+
     Returns (model, scaler, meta)."""
     X = np.asarray(X_train_raw, dtype=np.float64)
     scaler = MinMaxScaler()  # default clip=False — exact-reproduction semantics
@@ -321,11 +327,18 @@ def train_baseline(X_train_raw, y_int, le, seed: int = 42):
         MiliBaseline,
         nn.CrossEntropyLoss(),
         seed=seed,
-        augment_fn=data_mod.augment,
+        augment_fn=data_mod.augment if augment else None,
     )
     meta = dict(meta)
     meta["classes"] = list(le.classes_)
     meta["scaler"] = "MinMaxScaler() default clip=False (exact-reproduction semantics)"
+    if not augment:
+        meta["probe"] = (
+            "Model A trained WITHOUT augmentation (train_with_cv "
+            "augment_fn=None) through the SAME train_baseline path — "
+            "identical seeded folds, early stopping, and final-epochs "
+            "derivation; the Plan 03-03 augmentation probe"
+        )
     return model, scaler, meta
 
 

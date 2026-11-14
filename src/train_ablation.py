@@ -22,8 +22,14 @@ Stage contract (locked CONTEXT decisions — this docstring IS the contract):
   build_features reconciliation-raise posture). Loads the test slice
   exactly ONCE per run; computes accuracy, macro-F1, per-class F1
   (LabelEncoder order), ROC-AUC ovr-macro, and the confusion matrix per
-  evaluated model on the IDENTICAL held-out arrays; writes
-  reports/ablation_study.md, reports/confusion_matrix.png (ONE 2x2-subplot
+  evaluated model on the IDENTICAL held-out arrays; evaluates the
+  same-run augmentation probe (Model A trained with augment_fn=None —
+  its metrics render in the separated probe section, never in the main
+  table); computes the best-proposed verdict over the fixed B, C, D scan
+  (ties resolve to the earliest — the rule is stated in the report);
+  writes
+  reports/ablation_study.md (table + probe + verdict + caveats + param
+  block), reports/confusion_matrix.png (ONE 2x2-subplot
   grid — the final TRAIN-07 layout from day one), and
   reports/classification_report.txt — every report is built from ONE
   string, written with newline="\\n" after mkdir parents, and printed to
@@ -251,6 +257,56 @@ def _census(arrays, le) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Verdict logic (TRAIN-07/adjacency: deterministic, stated tie-break)
+# ---------------------------------------------------------------------------
+
+# The fixed scan order for "best proposed model" — an explicit ordered
+# loop, NEVER np.argmax over a reordered collection: equal macro-F1 ties
+# resolve to the EARLIEST model in this tuple (strict > comparison keeps
+# the earlier winner). The rule is stated verbatim in the report.
+PROPOSED_ORDER = ("B", "C", "D")
+
+# The honest pre-registered project success bar (PROJECT.md): MET requires
+# beating the reproduced baseline AND reaching macro-F1 >= 0.90.
+TARGET_MACRO_F1 = 0.90
+
+
+def compute_verdict(metrics_by_model) -> dict:
+    """Best-proposed verdict over the fixed PROPOSED_ORDER scan.
+
+    Returns {"best_id", "best_f1", "baseline_f1", "beats_baseline",
+    "target_met"}; None values mean the honest n/a renders (e.g. a partial
+    --models run). beats_baseline is a STRICT > (an exact tie with the
+    baseline is not a beat); target_met = beats_baseline AND
+    best_f1 >= TARGET_MACRO_F1 (the pre-registered bar combines both —
+    reported as measured, never tuned toward)."""
+    best_id = None
+    best_f1 = None
+    for model_id in PROPOSED_ORDER:
+        m = metrics_by_model.get(model_id)
+        if m is None:
+            continue
+        f1 = float(m["f1_macro"])
+        if best_id is None or f1 > best_f1:
+            best_id, best_f1 = model_id, f1
+    baseline = metrics_by_model.get("A")
+    baseline_f1 = float(baseline["f1_macro"]) if baseline is not None else None
+    if best_id is None:
+        beats_baseline = None
+        target_met = None
+    else:
+        beats_baseline = baseline_f1 is not None and best_f1 > baseline_f1
+        target_met = bool(beats_baseline) and best_f1 >= TARGET_MACRO_F1
+    return {
+        "best_id": best_id,
+        "best_f1": best_f1,
+        "baseline_f1": baseline_f1,
+        "beats_baseline": beats_baseline,
+        "target_met": target_met,
+    }
+
+
+# ---------------------------------------------------------------------------
 # --dry-run: validate the frozen contract + print the census, torch-free
 # ---------------------------------------------------------------------------
 
@@ -391,6 +447,31 @@ def run_train_stage(npz_path, selected) -> dict:
                 f"[ablation] Model {model_id} trained — no standalone "
                 "artifact (weights handed to the eval stage in-memory)"
             )
+
+    # Augmentation probe (CONTEXT-locked ONE cheap probe): Model A through
+    # the SAME train_baseline path with augmentation disabled — identical
+    # seeded folds, early stopping, and final-epochs derivation, isolating
+    # the augmentation effect WITHOUT touching the main-table Model A
+    # (which already trained above). The probe trains after every main
+    # model and its metrics never enter the main table.
+    if "A" in selected:
+        from src.models.baseline_ann import train_baseline
+
+        X_raw = np.asarray(arrays["features_raw"])[train_idx]
+        probe_model, probe_scaler, probe_meta = train_baseline(
+            X_raw, y_int, le, augment=False
+        )
+        meta_by_model["_probe_A"] = {
+            "model": probe_model,
+            "scaler": probe_scaler,
+            "meta": probe_meta,
+        }
+        print(
+            "[ablation] augmentation probe trained — Model A WITHOUT "
+            "augmentation (same train_baseline path, augment_fn=None; "
+            "metrics render in the separated probe section, never in the "
+            "main table)"
+        )
     return {"digest": digest, "meta_by_model": meta_by_model, "n_train": n_train}
 
 
@@ -477,8 +558,58 @@ def evaluate_and_report(npz_path, expected_digest: str, selected, meta_by_model,
         )
 
     census = _census(arrays, le)
+
+    # Augmentation probe eval — inside the SAME guarded stage (the only
+    # path to reported metrics), on the identical test arrays the main
+    # models were just measured on.
+    probe_metrics = None
+    if "_probe_A" in meta_by_model:
+        from src.models.baseline_ann import predict_proba
+
+        probe = meta_by_model["_probe_A"]
+        X_test_raw = np.asarray(arrays["features_raw"])[test_idx]
+        probe_proba = predict_proba(probe["model"], probe["scaler"].transform(X_test_raw))
+        probe_y_pred = probe_proba.argmax(axis=1)
+        probe_metrics = {
+            "accuracy": float(accuracy_score(y_test, probe_y_pred)),
+            "f1_macro": float(f1_score(y_test, probe_y_pred, average="macro")),
+            "f1_per_class": [
+                float(v)
+                for v in f1_score(y_test, probe_y_pred, average=None, labels=list(range(6)))
+            ],
+            "roc_auc_ovr_macro": float(
+                roc_auc_score(
+                    y_test, probe_proba, multi_class="ovr", average="macro",
+                    labels=list(range(6)),
+                )
+            ),
+            "cm": confusion_matrix(y_test, probe_y_pred, labels=list(range(6))),
+            "classification_report": classification_report(
+                y_test,
+                probe_y_pred,
+                labels=list(range(6)),
+                target_names=list(le.classes_),
+                digits=4,
+            ),
+        }
+        print(
+            f"[ablation] Augmentation probe (Model A, no augmentation) "
+            f"evaluated — accuracy {probe_metrics['accuracy']:.4f}, "
+            f"macro-F1 {probe_metrics['f1_macro']:.4f} (renders in the "
+            "separated probe section, never in the main table)"
+        )
+
+    verdict = compute_verdict(metrics_by_model)
+    manifest_path = REPO_ROOT / str(_paths_cfg()["outputs"]["manifest"])
+    lineage = {
+        "features_sha256": sha256_of(npz_path),
+        "manifest_sha256": sha256_of(manifest_path),
+        "digest": expected_digest,
+        "num_threads": _torch_num_threads(),
+    }
     report_text = _ablation_report_text(
-        npz_path, census, metrics_by_model, meta_by_model, n_train, le, models_dir
+        census, metrics_by_model, meta_by_model, probe_metrics, verdict,
+        n_train, le, lineage, models_dir,
     )
     report_path = reports_dir / "ablation_study.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -505,15 +636,22 @@ def evaluate_and_report(npz_path, expected_digest: str, selected, meta_by_model,
 # ---------------------------------------------------------------------------
 
 
-def _ablation_report_text(npz_path, census, metrics_by_model, meta_by_model,
-                          n_train, le, models_dir) -> str:
+def _ablation_report_text(census, metrics_by_model, meta_by_model,
+                          probe_metrics, verdict, n_train, le, lineage,
+                          models_dir) -> str:
     """reports/ablation_study.md — provenance lineage, counts +
-    augmentation census, the ablation table (fixed A-D order), and the
-    param block (seed, threads, versions, sha256 lineage, CV
-    hyperparameters, scaler semantics, code version). NO wall-clock
-    timestamps, NO datetime calls — byte-identical re-runs at the
-    param-text level (artifact sha256s reflect artifact bytes, the
-    features_build.md posture)."""
+    augmentation census, the ablation table (fixed A-D order), the
+    separated augmentation-probe section, the plainly-stated verdict
+    lines (best proposed + stated tie-break rule, beats-baseline, 0.90
+    target), the caveat block (Four n=5 + single seed), and the completed
+    param block (seed, threads, versions, sha256 lineage incl. the four
+    artifact hashes, CV + grid hyperparameters, code version). NO
+    wall-clock timestamps, NO datetime calls — byte-identical re-runs at
+    the param-text level (artifact sha256s reflect artifact bytes, the
+    features_build.md posture). ``lineage`` carries the precomputed
+    features.npz/manifest sha256s, the test-slice digest, and the torch
+    thread count so this writer stays pure (weight-free testable)."""
+    models_dir = Path(models_dir) if models_dir is not None else Path(".")
     lines: list = []
     lines.append("# Phase 3 ablation study report")
     lines.append("")
@@ -544,12 +682,6 @@ def _ablation_report_text(npz_path, census, metrics_by_model, meta_by_model,
         f"model-input space — {n_train} -> {2 * n_train} effective rows "
         "(inside each CV fold's train portion; the test slice is never "
         "augmented and the scaler is never refit on it)"
-    )
-    lines.append(
-        "Caveat: Four per-class F1 is computed on n=5 test rows (Phase 1 "
-        "audit flag: 24 usable < 30) — small-sample noisy by "
-        "construction; never re-tune on test to move it (pre-registered "
-        "discipline)."
     )
     lines.append("")
     lines.append("## Ablation table")
@@ -586,31 +718,122 @@ def _ablation_report_text(npz_path, census, metrics_by_model, meta_by_model,
     lines.append("")
     lines.append(f"Trained and evaluated this run: {trained}.")
     lines.append("")
+    lines.append("## Augmentation probe (Model A, no augmentation)")
+    lines.append("")
+    if probe_metrics is None:
+        lines.append("not run this run (the probe requires Model A's selection)")
+    else:
+        lines.append(
+            f"unaugmented Model A: accuracy {probe_metrics['accuracy']:.4f} / "
+            f"macro-F1 {probe_metrics['f1_macro']:.4f}"
+        )
+        baseline_metrics = metrics_by_model.get("A")
+        if baseline_metrics is not None:
+            lines.append(
+                f"augmented Model A (main table): accuracy "
+                f"{baseline_metrics['accuracy']:.4f} / macro-F1 "
+                f"{baseline_metrics['f1_macro']:.4f}"
+            )
+        lines.append(
+            "Interpretation: this probe is the empirical canary for the "
+            "swap-only mirror flip and the model-input-space jitter "
+            "(RESEARCH A2/A3) — if the unaugmented row matches or beats "
+            "the augmented row beyond noise, that is a reported FINDING "
+            "on the flip/jitter assumptions, never a trigger to re-tune "
+            "on test (pre-registered discipline). The probe never enters "
+            "the main table."
+        )
+        if (
+            baseline_metrics is not None
+            and probe_metrics["f1_macro"] >= baseline_metrics["f1_macro"]
+        ):
+            lines.append(
+                "FINDING: the unaugmented probe MATCHES OR BEATS augmented "
+                "Model A on this split (macro-F1 "
+                f"{probe_metrics['f1_macro']:.4f} vs "
+                f"{baseline_metrics['f1_macro']:.4f}) — the canary flags "
+                "the swap-only flip and/or model-input-space jitter "
+                "assumptions (RESEARCH A2/A3); reported as measured, "
+                "never re-tuned on test."
+            )
+    lines.append("")
+    lines.append("## Verdict")
+    lines.append("")
+    if verdict["best_id"] is None:
+        lines.append(
+            "Best proposed model: n/a (no proposed model (B/C/D) was "
+            "evaluated this run)"
+        )
+    else:
+        lines.append(
+            f"Best proposed model: {verdict['best_id']} "
+            f"(macro-F1 {verdict['best_f1']:.4f})"
+        )
+    lines.append(
+        "Tie-break rule: ties resolve to the earliest of B, C, D in table "
+        "order (explicit ordered scan over the fixed tuple — never "
+        "np.argmax over a reordered collection)."
+    )
+    if verdict["beats_baseline"] is None:
+        lines.append(
+            "Beats baseline (Model A): n/a (Model A or no proposed model "
+            "evaluated this run)"
+        )
+    else:
+        lines.append(
+            "Beats baseline (Model A): "
+            + ("YES" if verdict["beats_baseline"] else "NO")
+        )
+    if verdict["target_met"] is None:
+        lines.append(
+            "macro-F1 >= 0.90 target: n/a (no proposed model evaluated "
+            "this run)"
+        )
+    else:
+        lines.append(
+            "macro-F1 >= 0.90 target: "
+            + ("MET" if verdict["target_met"] else "NOT MET")
+        )
+    lines.append("")
+    lines.append("## Caveats")
+    lines.append("")
+    lines.append(
+        "Four: n=5 test rows; the 24-usable < 30 flag is carried from the "
+        "Phase 1 audit; per-class F1 for Four is small-sample noisy and "
+        "never tuned on test."
+    )
+    lines.append(
+        "single seed 42 everywhere (matches the locked split seed); no "
+        "multi-seed mean+-std in this phase."
+    )
+    lines.append("")
     lines.append("## Parameter block")
     lines.append("")
     lines.append(f"seed: {SEED}")
-    lines.append(f"torch num threads: {_torch_num_threads()}")
+    lines.append(f"torch num threads: {lineage['num_threads']}")
+    versions = collect_versions()
     for pkg in VERSION_PACKAGES:
-        lines.append(f"{pkg} version: {collect_versions().get(pkg, 'unknown')}")
-    lines.append(f"features.npz sha256: {sha256_of(npz_path)}")
-    manifest_path = REPO_ROOT / str(_paths_cfg()["outputs"]["manifest"])
-    lines.append(f"manifest sha256: {sha256_of(manifest_path)}")
-    lines.append(f"test-slice digest: {test_slice_digest(npz_path)}")
-    encoder_path = models_dir / "label_encoder.joblib"
-    if encoder_path.exists():
-        lines.append(f"models/label_encoder.joblib sha256: {sha256_of(encoder_path)}")
-    rendered_artifacts: set = set()
+        lines.append(f"{pkg} version: {versions.get(pkg, 'unknown')}")
+    lines.append(f"features.npz sha256: {lineage['features_sha256']}")
+    lines.append(f"manifest sha256: {lineage['manifest_sha256']}")
+    lines.append(f"test-slice digest: {lineage['digest']}")
+    # The four TRAIN-08 artifacts in canonical order — gitignored runtime
+    # files; their sha256s ARE the tracked provenance (a missing artifact
+    # renders no line rather than a lie).
+    for art_name, file_name in (
+        ("baseline_ann", "baseline_ann.pt"),
+        ("pose_mlp", "pose_mlp.pt"),
+        ("ensemble_model", "ensemble_model.joblib"),
+        ("label_encoder", "label_encoder.joblib"),
+    ):
+        artifact = models_dir / file_name
+        if artifact.exists():
+            lines.append(
+                f"{art_name} sha256: {sha256_of(artifact)} (models/{file_name})"
+            )
     for model_id in MODULE_ORDER:
         if model_id not in metrics_by_model:
             continue
-        artifact_name = MODEL_REGISTRY[model_id]["artifact"]
-        if artifact_name not in rendered_artifacts:
-            artifact = models_dir / artifact_name
-            if artifact.exists():
-                lines.append(
-                    f"models/{artifact_name} sha256: {sha256_of(artifact)}"
-                )
-                rendered_artifacts.add(artifact_name)
         meta = meta_by_model.get(model_id, {})
         if not meta:
             continue
@@ -666,10 +889,6 @@ def _ablation_report_text(npz_path, census, metrics_by_model, meta_by_model,
             lines.append(
                 f"Model {model_id} model C source: {meta['model_c_source']}"
             )
-    lines.append(
-        "single-seed caveat: every number above is one seed-42 run "
-        "(multi-seed mean±std deferred per CONTEXT)"
-    )
     lines.append(f"code version: {CODE_VERSION}")
     return "\n".join(lines) + "\n"
 

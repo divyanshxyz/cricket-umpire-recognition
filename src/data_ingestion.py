@@ -86,8 +86,10 @@ def main(argv=None) -> int:
     paths_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     class_cfg = load_class_map(config_path.parent / "classes.yaml")
 
-    # 1. DISCOVER — per-source census rows (warn-and-continue; hard aborts inside).
-    source_rows = discover_sources(paths_cfg)
+    # 1. DISCOVER — per-source census rows (warn-and-continue; hard aborts
+    #    inside). Resolves every entry path against `base` like every other
+    #    stage, so discovery works from any working directory.
+    source_rows = discover_sources(paths_cfg, base)
 
     # 2. PARSE — per family adapter, sorted walk, --limit cap after sorting.
     records = []

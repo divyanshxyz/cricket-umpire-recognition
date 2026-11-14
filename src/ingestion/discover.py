@@ -5,6 +5,10 @@ the run); an absent datasets/ root — or every image source empty — aborts
 with an actionable error (prior-script main-loop style). Every walk is sorted
 (Pattern 4) and no dict-order-dependent logic exists: iteration follows the
 paths.yaml file order deterministically.
+
+All entry paths (roots, audit-only CSVs, the datasets/ abort check) resolve
+against the caller-supplied ``base`` — the same config-derived repo root the
+parse/hash/write stages use — never against the current working directory.
 """
 
 from __future__ import annotations
@@ -37,8 +41,14 @@ def _scan_csv(path: Path) -> int:
         return max(0, sum(1 for _ in f) - 1)  # minus header
 
 
-def discover_sources(paths_cfg: dict) -> list[dict]:
+def discover_sources(paths_cfg: dict, base: Path) -> list[dict]:
     """Per-source summary rows for the audit.
+
+    ``base`` is the config-derived repo root (configs/paths.yaml's
+    grandparent, as computed by the CLI coordinator) — every entry path is
+    resolved as ``base / entry[...]`` so discovery reads the same tree the
+    parse/hash/write stages read, regardless of the current working
+    directory.
 
     Returns a list of dicts with keys: name, root, family, priority,
     image_count, raw_classes, status ('ok'|'warn'), note. Audit-only entries
@@ -55,7 +65,7 @@ def discover_sources(paths_cfg: dict) -> list[dict]:
         str(entry.get("root", "")).replace("\\", "/").startswith("datasets")
         for entry in roots.values()
     )
-    if expects_datasets_root and not Path("datasets").is_dir():
+    if expects_datasets_root and not (base / "datasets").is_dir():
         sys.exit(
             "[discover] datasets/ root not found. The pipeline reads raw data from "
             "the sibling datasets/ folder (read-only) — check the 'root' paths in "
@@ -63,7 +73,7 @@ def discover_sources(paths_cfg: dict) -> list[dict]:
         )
 
     for name, entry in roots.items():
-        root = Path(entry["root"])
+        root = base / entry["root"]
         family = entry["family"]
         if not root.is_dir():
             rows.append({
@@ -87,7 +97,7 @@ def discover_sources(paths_cfg: dict) -> list[dict]:
         })
 
     for name, entry in (paths_cfg.get("audit_only") or {}).items():
-        path = Path(entry["path"])
+        path = base / entry["path"]
         present = path.is_file()
         rows.append({
             "name": name, "root": entry["path"],

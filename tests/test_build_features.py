@@ -271,6 +271,44 @@ def test_write_features_npz_round_trip(tmp_path):
         assert z["failure_reasons"].tolist() == ["no_person", "path_escape"]
 
 
+def test_write_features_npz_refuses_misshaped_arrays(tmp_path):
+    # CR-02 defense-in-depth: the npz writer is fail-closed on the frozen
+    # widths — a (N, 72) raw block (leaked by a non-17-keypoint checkpoint)
+    # or a (N, 80) engineered block raises ValueError instead of writing a
+    # silently mis-shaped frozen artifact.
+    base = {
+        "labels": ["Six", "Wide"],
+        "split": ["train", "test"],
+        "row_ids": ["a_00000", "b_00000"],
+        "failed_row_ids": [],
+        "failure_reasons": [],
+    }
+    bad_raw = dict(
+        base,
+        features_raw=np.zeros((2, 72), dtype=np.float32),
+        features_eng=np.zeros((2, 59), dtype=np.float32),
+    )
+    with pytest.raises(ValueError, match="51"):
+        write_features_npz(tmp_path / "bad_raw.npz", bad_raw)
+    bad_eng = dict(
+        base,
+        features_raw=np.zeros((2, 51), dtype=np.float32),
+        features_eng=np.zeros((2, 80), dtype=np.float32),
+    )
+    with pytest.raises(ValueError, match="59"):
+        write_features_npz(tmp_path / "bad_eng.npz", bad_eng)
+    # The empty (0, 51)/(0, 59) contract shape still writes fine.
+    write_features_npz(
+        tmp_path / "empty.npz",
+        dict(
+            base,
+            features_raw=np.empty((0, 51), dtype=np.float32),
+            features_eng=np.empty((0, 59), dtype=np.float32),
+        ),
+    )
+    assert (tmp_path / "empty.npz").exists()
+
+
 def test_module_source_has_no_top_level_heavy_imports():
     # The plan's weights-free contract: src.build_features stays importable
     # without torch/ultralytics/cv2 — the heavy imports live inside the

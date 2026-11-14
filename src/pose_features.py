@@ -464,6 +464,23 @@ class PoseFeatureExtractor:
             )
             record_failure(source_label, failure.reason)
             return None, failure
+        if r.keypoints.data.shape[-2] != 17:
+            # CR-02: the keypoint-count dim is guarded too. A non-17 count
+            # (any pose checkpoint other than COCO-17, e.g. a (24, 3)
+            # tensor) would otherwise flow through as SUCCESS rows: raw
+            # (72,) + eng (80,) np.stack'd into a silently mis-shaped
+            # frozen features.npz while the build reports ok — exactly the
+            # T-02-04 silent-corruption class. Same typed reason as the
+            # missing-pose-head trip (already in the closed set).
+            failure = ExtractionFailure(
+                "no_keypoints",
+                f"keypoint tensor for {source_label} has shape "
+                f"{tuple(r.keypoints.data.shape)} — the seam needs a "
+                "[17, 3] (x, y, conf) COCO-17 checkpoint; check kpt_shape "
+                "in the weights",
+            )
+            record_failure(source_label, failure.reason)
+            return None, failure
         boxes_xyxy = r.boxes.xyxy.cpu().numpy()
         box_conf = r.boxes.conf.cpu().numpy()
         kpts_all = r.keypoints.data.cpu().numpy()

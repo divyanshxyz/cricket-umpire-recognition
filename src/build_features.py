@@ -171,7 +171,27 @@ def write_features_npz(path, arrays: dict) -> None:
     unicode arrays over EVERY failed row in encounter order (researcher
     disposition 3: failures are explicit parallel arrays — never NaN
     placeholders, never silently dropped). The npz is a gitignored runtime
-    artifact; provenance lives in the tracked report."""
+    artifact; provenance lives in the tracked report.
+
+    Fail-closed width guard (CR-02 defense-in-depth, T-02-04): a mis-shaped
+    array — e.g. a non-17-keypoint checkpoint leaking (N, 72) raw rows past
+    the seam guard — raises ValueError instead of silently corrupting the
+    frozen artifact. Explicit raise (not assert) so the guard survives
+    ``python -O`` and matches the project's fail-closed validation posture."""
+    raw = np.asarray(arrays["features_raw"])
+    eng = np.asarray(arrays["features_eng"])
+    if raw.ndim != 2 or raw.shape[1] != 51:
+        raise ValueError(
+            f"write_features_npz: features_raw must be (N_ok, 51) float32, "
+            f"got shape {raw.shape} — refusing to write a mis-shaped frozen "
+            "artifact (17-keypoint x 3-channel seam contract, CR-02)"
+        )
+    if eng.ndim != 2 or eng.shape[1] != 59:
+        raise ValueError(
+            f"write_features_npz: features_eng must be (N_ok, 59) float32, "
+            f"got shape {eng.shape} — refusing to write a mis-shaped frozen "
+            "artifact (17 x 3 normalized + 8 geometry seam contract, CR-02)"
+        )
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(

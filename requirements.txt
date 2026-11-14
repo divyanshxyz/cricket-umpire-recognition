@@ -3,7 +3,11 @@
 ImageHash==4.3.2
 numpy<2.3
 pandas==2.2.*
-PyYAML==6.0.*
+# PyYAML exact-pinned per the header policy (IN-R2-04): unlike numpy/pandas
+# (documented torch-compatibility ranges) it has no range exception. Version
+# read from the working venv; config-only dependency — yaml.safe_load is
+# stable across 6.0.x and the audit does not record its version.
+PyYAML==6.0.3
 scikit-learn==1.9.1
 tqdm==4.70.1
 pytest==9.2.0

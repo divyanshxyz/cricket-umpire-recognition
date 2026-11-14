@@ -27,6 +27,10 @@ dataset_roots:
     root: datasets/Inception_test_train_split
     family: filename-label
     priority: 1
+  four:
+    root: datasets/four
+    family: filename-label
+    priority: 1
 
 # Listed in the audit, excluded from the image pipeline
 # (pre-computed pose-feature table from a prior iteration).

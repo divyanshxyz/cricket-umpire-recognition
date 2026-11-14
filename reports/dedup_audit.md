@@ -25,15 +25,16 @@ code version: phase1-plan03-r2
 | archive3 | datasets/archive3 | filename-label | 390 | 390 | ok | no_action, no_ball, out, sixes, wide |
 | archive1 | datasets/archive1 | folder-label | 312 | 312 | ok | noball, out, six, wide |
 | inception | datasets/Inception_test_train_split | filename-label | 843 | 843 | ok | no_action, no_ball, non_umpire, out, sixes, umpire, wide |
+| four | datasets/four | filename-label | 3 | - | - | four |
 | umpire_pose_dataset.csv | datasets/umpire_pose_dataset.csv | precomputed-csv | 2909 rows | - | - | audit-only, excluded from the image pipeline |
 roboflow_umpire_wide unique stems: 558 (expected 558) [ok]
 
 ## Totals
 
-Raw image files: 4577
-Kept after dedup: 434 (sanity band 1250-1450)
+Raw image files: 4580
+Kept after dedup: 437 (sanity band 1250-1450)
 Sanity band verdict: OUT OF BAND - investigate dedup before Phase 2
-Manifest class rows (post conditional evaluation): 421
+Manifest class rows (post conditional evaluation): 424
 
 ## Duplicates removed
 
@@ -82,17 +83,17 @@ Label conflicts resolved (tier priority, majority at equal tier, lexicographic t
 ## Per-class post-dedup counts (assigned split)
 
   Class         Train    Test   Total
-  Four             17       4      21
+  Four             19       5      24
   NoAction         85      21     106
-  NoBall           69      18      87
+  NoBall           70      17      87
   Out              39      10      49
   Six              44      11      55
   Wide             82      21     103
-FLAG Four: 21 usable samples < 30 — collect more 'Four' images before Phase 2 (collect-more contingency)
+FLAG Four: 24 usable samples < 30 — collect more 'Four' images before Phase 2 (collect-more contingency)
 
 Cross-split phash leaks (Hamming <= 8): 0
   zero near-duplicate pairs across the train/test boundary — leak-free split (dedup merged every pair within the threshold BEFORE the split existed)
 
-Crops written (crop_<row_id>.jpg): 172, non-Roboflow full-image rows 249, invalid/degenerate 0, failed 0
+Crops written (crop_<row_id>.jpg): 172, non-Roboflow full-image rows 252, invalid/degenerate 0, failed 0
 
 Determinism contract: sorted walks, fixed random_state, static code version tag, no wall-clock timestamps — two consecutive full runs produce byte-identical manifest.csv and dedup_audit.md.

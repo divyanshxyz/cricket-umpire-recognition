@@ -4,8 +4,8 @@ Provenance for the frozen data/processed/features.npz over the Phase 1 manifest 
 
 ## Counts
 
-total manifest rows: 421
-ok: 415
+total manifest rows: 424
+ok: 418
 failed: 6
   no_person: 6
   no_keypoints: 0
@@ -14,11 +14,11 @@ failed: 6
   decode_error: 0
   keypoints_without_confidence: 0
   other: 0
-reconciliation: ok + failed == total (415 + 6 == 421)
+reconciliation: ok + failed == total (418 + 6 == 424)
 scale fallback warnings: 0
 
 Per-class OK counts:
-  Four: 21
+  Four: 24
   NoAction: 104
   NoBall: 85
   Out: 49
@@ -26,10 +26,11 @@ Per-class OK counts:
   Wide: 102
 
 Per-split OK counts:
-  test: 82
-  train: 333
+  test: 84
+  train: 334
 
 Per-class zero-OK red flags: none
+Per-split zero-OK red flags: none
 
 ## Parameter block
 
@@ -44,5 +45,5 @@ ultralytics version: 8.4.212
 opencv-python version: 4.14.0.94
 numpy version: 2.2.6
 weights sha256: c6fa93dd1ee4a2c18c900a45c1d864a1c6f7aba75d84f91648a30b7fb641d212
-manifest sha256: 5101eeade2f9596032d6114ddf174aeed4c57897bf2680c0f559829afe56ba5d
-code version: phase2-plan01-r1
+manifest sha256: eca8579b4adf794af2bf4d211a598f42f20a933b5049c26268112da2169ef67a
+code version: phase2-plan01-r2

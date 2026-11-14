@@ -207,7 +207,7 @@ def raw_features(kpts_detected):
     return np.asarray(kpts_detected, dtype=np.float32).reshape(-1)
 
 
-def torso_scale(kpts_masked, mask_conf: float = 0.20):
+def torso_scale(kpts_masked, mask_conf: float = 0.20, row_id: str = "torso_scale"):
     """Torso scale fallback chain (CONTEXT locked; zero-length scales
     (<= 1e-6) fall through to the next stage):
 
@@ -218,6 +218,12 @@ def torso_scale(kpts_masked, mask_conf: float = 0.20):
        ("shoulder_width", s);
     3. otherwise (1.0, "unit") plus a record_scale_warning entry — the
        CONTEXT 'logged warning' for the unit-scale fallback.
+
+    ``row_id`` is the recorded warning's row/image identity (IN-04): the
+    extract() seam threads ``source_label`` and the sequence path threads
+    ``sequence_frame_{i}``, so unit-scale fallbacks are attributable per
+    row, not just countable; the default keeps the legacy label for direct
+    weight-free callers.
 
     Returns (scale, source). Pure math except the terminal-warning event
     record (the module-level recorder is the sanctioned side channel, so
@@ -239,7 +245,7 @@ def torso_scale(kpts_masked, mask_conf: float = 0.20):
         if s > _SCALE_MIN:
             return s, "shoulder_width"
     record_scale_warning(
-        "torso_scale",
+        row_id,
         "torso and shoulder-width scales both unusable — falling back to "
         "scale=1.0 (unit); masked coords are 0 anyway",
     )
@@ -528,7 +534,9 @@ class PoseFeatureExtractor:
         mask_conf = float(self.config["mask_conf"])
         kpts_masked = mask_keypoints(kpts_detected, mask_conf)
         raw = raw_features(kpts_detected)
-        scale, _source = torso_scale(kpts_masked, mask_conf)
+        # IN-04: the real row/image identity rides on the unit-scale
+        # fallback warning so build reports can attribute the event.
+        scale, _source = torso_scale(kpts_masked, mask_conf, source_label)
         eng = engineered_features(kpts_masked, scale, mask_conf)
         return raw, eng
 
@@ -550,7 +558,7 @@ class PoseFeatureExtractor:
             return None, failure
         mask_conf = float(self.config["mask_conf"])
         per_frame_rows = []
-        for frame in frames:
+        for frame_idx, frame in enumerate(frames):
             raw, payload = self.extract(frame)
             if raw is None:
                 per_frame_rows.append((None, payload))  # (None, ExtractionFailure)
@@ -558,6 +566,10 @@ class PoseFeatureExtractor:
             kpts_masked = mask_keypoints(
                 np.asarray(raw, dtype=np.float64).reshape(17, 3), mask_conf
             )
-            scale, _source = torso_scale(kpts_masked, mask_conf)
+            # IN-04: frame identity rides on the unit-scale fallback
+            # warning, matching the failure events' sequence_frame_N labels.
+            scale, _source = torso_scale(
+                kpts_masked, mask_conf, f"sequence_frame_{frame_idx}"
+            )
             per_frame_rows.append((raw, payload, scale, kpts_masked[:, :2]))
         return assemble_sequence(per_frame_rows)

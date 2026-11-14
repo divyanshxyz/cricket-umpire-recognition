@@ -94,6 +94,21 @@ def test_torso_scale_zero_length_everything_falls_to_unit_with_warning():
     assert len(scale_warning_events()) == before + 1
 
 
+def test_torso_scale_unit_warning_carries_row_identity():
+    # IN-04 regression: the unit-scale fallback warning records the
+    # caller's row/image identity (extract() threads source_label; the
+    # sequence path threads sequence_frame_{i}), so events are attributable
+    # per row — not just countable under the old hardcoded "torso_scale"
+    # label. Omitting row_id keeps the legacy default for direct callers.
+    kpts = _torso_kpts((0, 100), (100, 100), (0, 0), (100, 0), conf=0.1)
+    before = len(scale_warning_events())
+    scale, source = torso_scale(kpts, 0.20, row_id="img_00042")
+    assert (scale, source) == (1.0, "unit")
+    events = scale_warning_events()
+    assert len(events) == before + 1
+    assert events[-1].startswith("img_00042: ")
+
+
 # --- geometry features (authored [ASSUMED] A1 formulas, hand-computed) ---
 
 

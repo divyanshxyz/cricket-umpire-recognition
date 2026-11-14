@@ -1,0 +1,29 @@
+Phase 3 classification reports — one section per evaluated model; target order (LabelEncoder): Four, NoAction, NoBall, Out, Six, Wide
+
+=== Model A — Mili et al. baseline reproduction (TRAIN-03) ===
+
+              precision    recall  f1-score   support
+
+        Four     0.5000    0.8000    0.6154         5
+    NoAction     0.7407    0.9524    0.8333        21
+      NoBall     0.9167    0.6875    0.7857        16
+         Out     0.4706    0.8000    0.5926        10
+         Six     0.9091    0.9091    0.9091        11
+        Wide     1.0000    0.4286    0.6000        21
+
+    accuracy                         0.7381        84
+   macro avg     0.7562    0.7629    0.7227        84
+weighted avg     0.8146    0.7381    0.7342        84
+
+=== Model B (registered by a later plan) ===
+
+not trained yet (registered by a later plan)
+
+=== Model C (registered by a later plan) ===
+
+not trained yet (registered by a later plan)
+
+=== Model D (registered by a later plan) ===
+
+not trained yet (registered by a later plan)
+

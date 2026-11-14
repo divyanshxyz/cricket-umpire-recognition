@@ -217,8 +217,13 @@ def main(argv=None) -> int:
 
     # 7. LEAK CHECK — cross-split phash pairs must be zero (the phase's
     #    success criterion, provable by construction: dedup merged every
-    #    pair within the threshold BEFORE the split existed).
-    leaks = leak_check(rows, threshold)
+    #    pair within the threshold BEFORE the split existed). The check
+    #    itself fails closed (WR-02): unassigned splits, a missing phash, or
+    #    an empty side raise ValueError instead of a green 0.
+    try:
+        leaks = leak_check(rows, threshold)
+    except ValueError as err:
+        raise SystemExit(f"[leak-check] {err}")
     if leaks != 0:
         raise SystemExit(
             f"[leak-check] cross-split phash pairs at Hamming <= {threshold}: "

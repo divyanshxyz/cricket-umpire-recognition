@@ -151,6 +151,26 @@ def test_leak_check_missing_hash_raises():
         leak_check(rows, threshold=8)
 
 
+def test_leak_check_unassigned_split_raises_fail_closed():
+    # WR-02: a row whose split is neither train nor test must raise — the
+    # old behavior silently dropped it from both sides and under-counted.
+    rows = [
+        {"row_id": "t0", "split": "train", "phash_hex": FAR_HASHES[0]},
+        {"row_id": "u0", "split": "", "phash_hex": FAR_HASHES[1]},
+        {"row_id": "s0", "split": "test", "phash_hex": FAR_HASHES[2]},
+    ]
+    with pytest.raises(ValueError):
+        leak_check(rows, threshold=8)
+
+
+def test_leak_check_empty_side_raises_fail_closed():
+    # WR-02: a one-sided comparison proves nothing — the old `return 0`
+    # returned the success value for a degenerate call.
+    rows = [{"row_id": "t0", "split": "train", "phash_hex": FAR_HASHES[0]}]
+    with pytest.raises(ValueError):
+        leak_check(rows, threshold=8)
+
+
 # ---------------------------------------------------------------------------
 # evaluate_conditional — INGEST-06 strict >30 boundary
 # ---------------------------------------------------------------------------

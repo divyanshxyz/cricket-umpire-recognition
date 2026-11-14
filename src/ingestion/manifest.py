@@ -167,24 +167,41 @@ def leak_check(rows, threshold: int) -> int:
     provable by construction (every pair within the threshold was merged by
     dedup BEFORE the split existed) — this check is the assertion.
 
-    Raises ValueError when any row lacks a phash (the leak check would
-    otherwise silently under-count).
+    Fails CLOSED (WR-02 — this is the invariant's last line of defense, so a
+    green "0 leaks" must be earned, never defaulted):
+
+    - Raises ValueError when any row's ``split`` is neither "train" nor
+      "test" — an unassigned row would otherwise be dropped from both sides
+      and silently under-count (:func:`assign_split` must run first).
+    - Raises ValueError when either side is empty — a one-sided comparison
+      proves nothing, so returning the success value ``0`` would mask the
+      degenerate call.
+    - Raises ValueError when any row lacks a phash (the leak check would
+      otherwise silently under-count).
     """
     train: list[str] = []
     test: list[str] = []
     for row in rows:
+        split = row.get("split")
+        if split not in ("train", "test"):
+            raise ValueError(
+                f"row {row.get('row_id', '?')} has split {split!r} — assign_split "
+                "must run before leak_check (an unassigned row would be dropped "
+                "from both sides and the check would silently under-count)"
+            )
         h = row.get("phash_hex") or ""
         if not h:
             raise ValueError(
                 f"row {row.get('row_id', '?')} has no phash_hex — the leak "
                 "check would silently under-count; hash before splitting"
             )
-        if row.get("split") == "train":
-            train.append(h)
-        elif row.get("split") == "test":
-            test.append(h)
+        (train if split == "train" else test).append(h)
     if not train or not test:
-        return 0
+        raise ValueError(
+            f"leak check is degenerate: {len(train)} train rows vs {len(test)} "
+            "test rows — both splits must be non-empty for the cross-split "
+            "assertion to mean anything (failing closed instead of returning 0)"
+        )
     h_train, h_test = pack64(train), pack64(test)
     distances = popcount(np.bitwise_xor.outer(h_train, h_test))
     return int((distances <= threshold).sum())

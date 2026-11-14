@@ -28,7 +28,8 @@ from .dedup import roboflow_stem
 # after the leak check + per-run crops_dir reset, base-relative discovery,
 # EXIF-transpose hashing. Outputs are byte-identical on the committed
 # dataset; the tag marks the code boundary for future drift forensics.
-CODE_VERSION = "phase1-plan03-r1"
+# r2: the R2 review-fix batch (IN-R2-01..05) — DEFAULT_PARAMS fallback in the report's parameter block, excluded-records term in the WR-03 reconciliation identity, export-scoped umpire-row census, PyYAML exact pin, current zero-parse warn text. Audit wording only; manifest semantics untouched.
+CODE_VERSION = "phase1-plan03-r2"
 
 # Expected per-source census (RESEARCH.md Verified Dataset Census, read from
 # disk 2026-11-14) — the sanity column the report renders against the actual

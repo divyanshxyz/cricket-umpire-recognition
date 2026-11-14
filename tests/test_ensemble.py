@@ -212,6 +212,50 @@ def test_augmenting_wrapper_rejects_unset_random_state():
 # ---------------------------------------------------------------------------
 
 
+def test_bundle_state_mirrors_are_byte_stable_across_tensor_cycle(tmp_path):
+    """The determinism contract behind the numpy-mirror bundle: Model C's
+    state pushed through the tensor -> numpy-mirror -> tensor ->
+    numpy-mirror cycle must produce BYTE-IDENTICAL bundle bytes, even
+    though each tensor hop re-allocates storage at a different address —
+    torch-storage pickling embeds the storage's data_ptr
+    (process-varying), so the bundle stores numpy mirrors instead.
+
+    Scope note: the xgb/rf members are reused as the SAME objects here —
+    an xgboost wrapper repickles slightly differently after a load cycle
+    (fit-time caches), which is NOT part of this contract; the real
+    end-to-end stability (two fresh training runs -> byte-identical
+    bundle) is proven by the runner's byte-identity double-run gate."""
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(24, 59)).astype(np.float32)
+    y = np.arange(24) % 6
+    xgb_clf = AugmentingXGBClassifier(
+        n_estimators=5, max_depth=2, random_state=42, n_jobs=1,
+        tree_method="hist", eval_metric="mlogloss", verbosity=0,
+    )
+    xgb_clf.fit(X, y)
+    rf_clf = AugmentingRandomForestClassifier(n_estimators=5, random_state=42, n_jobs=1)
+    rf_clf.fit(X, y)
+    torch.manual_seed(0)
+    model_c = ResidualMLP_for_bundle()
+    state = {k: v.detach().cpu().clone() for k, v in model_c.state_dict().items()}
+    hyper = {"input_dim": 59, "hidden_dim": 16, "num_blocks": 2, "dropout": 0.1,
+             "n_classes": 6}
+
+    p1 = tmp_path / "b1.joblib"
+    save_ensemble_bundle(p1, xgb_clf, rf_clf, state, hyper, LE)
+
+    # Cycle the state back through tensors (fresh allocations) and re-save.
+    cycled = load_ensemble_bundle(p1)["model_c_state"]
+    tensor_state = {k: torch.from_numpy(v) for k, v in cycled.items()}
+    p2 = tmp_path / "b2.joblib"
+    save_ensemble_bundle(p2, xgb_clf, rf_clf, tensor_state, hyper, LE)
+    assert p1.read_bytes() == p2.read_bytes(), (
+        "bundle bytes moved across a tensor re-allocation — a "
+        "process-varying value (e.g. a storage data_ptr) leaked into the "
+        "pickle stream and would break the byte-identity double-run gate"
+    )
+
+
 def test_bundle_roundtrip_and_rebuild_model_c(tmp_path):
     rng = np.random.default_rng(1)
     X = rng.normal(size=(24, 59)).astype(np.float32)

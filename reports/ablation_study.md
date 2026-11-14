@@ -64,7 +64,7 @@ manifest sha256: eca8579b4adf794af2bf4d211a598f42f20a933b5049c26268112da2169ef67
 test-slice digest: c75427be36a02e59fe1d1a92abeded39107a7935cb6db851fea37618c735efa8
 baseline_ann sha256: b4058adff1e22211935061d5dda1a03fb1ae6385e3d9d4c68cc3f4d4685a82a3 (models/baseline_ann.pt)
 pose_mlp sha256: 3ec38a0fbabdb4d018bd5f092fc334e5124321750f7caf72443571095685e80b (models/pose_mlp.pt)
-ensemble_model sha256: e6b860e6d918fe80530ed667d1fd7ae0245e168c4b4e6da3b5d6f023dc9f6b08 (models/ensemble_model.joblib)
+ensemble_model sha256: 12c84a36bc574ce62da96bc6b09aa864c97bfdbc596169eaa1ece070b155562f (models/ensemble_model.joblib)
 label_encoder sha256: b439eff2f6effdcdf056481243d1b9bd448d97b2a1eb9d16bedccce2b7fa8a0f (models/label_encoder.joblib)
 Model A meta: fold_best_epochs [78, 43, 48, 60, 36]; final_epochs 53; batch_size 32
 Model A cv protocol: StratifiedKFold(5, shuffle=True, random_state=42) (n_folds 5); max_epochs 150; early stop on val loss (patience 15); final epochs = round(mean fold-best); augmentation inside each fold's train portion only

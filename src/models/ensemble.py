@@ -26,7 +26,10 @@ Locked contracts (03-CONTEXT.md / 03-RESEARCH.md):
   sklearn clone semantics intact. The augmentation seed is the member's
   fixed random_state=42, so every fold fit is deterministic (Pitfall 7).
 - The bundle (models/ensemble_model.joblib, gitignored) is SELF-CONTAINED
-  (A4 disposition): fitted xgb, fitted rf, Model C state_dict +
+  (A4 disposition): fitted xgb, fitted rf, Model C state_dict (stored as
+  numpy mirrors — torch-storage pickling embeds the storage's
+  process-varying data_ptr, which broke the byte-identity double-run
+  gate; numpy buffers pickle deterministically) +
   model_c_hyperparams {input_dim 59, hidden_dim, num_blocks, dropout,
   n_classes}, classes, voting "soft", members ["model_c", "xgboost",
   "random_forest"]. joblib roundtrip reloads and rebuild_model_c
@@ -335,12 +338,25 @@ def save_ensemble_bundle(path, xgb_best, rf_best, model_c_state,
     bundle (A4: the ensemble cannot reproduce Model C's probabilities
     without C's weights inside).
 
-    Payload: fitted xgb, fitted rf, Model C state_dict (detached cpu
-    clones), model_c_hyperparams (exactly {input_dim, hidden_dim,
-    num_blocks, dropout, n_classes}), classes (plain str list — the
-    shared encoder order), voting "soft", members ["model_c", "xgboost",
-    "random_forest"]. Gitignored runtime artifact — its sha256 goes into
-    the tracked report, never the binary."""
+    Payload: fitted xgb, fitted rf, Model C state_dict stored as NUMPY
+    MIRRORS of the tensors (key-for-key, same dtypes/shapes),
+    model_c_hyperparams (exactly {input_dim, hidden_dim, num_blocks,
+    dropout, n_classes}), classes (plain str list — the shared encoder
+    order), voting "soft", members ["model_c", "xgboost",
+    "random_forest"]. rebuild_model_c converts the numpy mirrors back to
+    tensors — the bundle stays self-contained without any training code.
+
+    WHY NUMPY MIRRORS (determinism finding, Plan 03-03 Task 3 gate):
+    pickling a torch tensor goes through UntypedStorage.__reduce__, which
+    embeds a legacy torch.save of the storage — and that container
+    carries the storage's data_ptr (a process-varying memory address).
+    Two byte-identical-weight runs therefore produced different
+    ensemble_model.joblib bytes, breaking the byte-identity double-run
+    gate. Numpy arrays pickle as raw buffers — byte-stable for identical
+    contents (the same reason pose_mlp.pt/baseline_ann.pt are stable:
+    same-path torch.save writes no addresses). Gitignored runtime
+    artifact — its sha256 goes into the tracked report, never the
+    binary."""
     hyper = dict(model_c_hyperparams)
     missing = [k for k in MODEL_C_HYPERPARAM_KEYS if k not in hyper]
     if missing:
@@ -350,13 +366,16 @@ def save_ensemble_bundle(path, xgb_best, rf_best, model_c_state,
             "bundle without the full Model C construction contract cannot "
             "be rebuilt self-contained (fail-closed)"
         )
+    state_out = {}
+    for k, v in dict(model_c_state).items():
+        if isinstance(v, torch.Tensor):
+            state_out[k] = np.array(v.detach().cpu().numpy(), copy=True)
+        else:
+            state_out[k] = np.array(v, copy=True)
     bundle = {
         "xgb": xgb_best,
         "rf": rf_best,
-        "model_c_state": {
-            k: (v.detach().cpu().clone() if isinstance(v, torch.Tensor) else v)
-            for k, v in dict(model_c_state).items()
-        },
+        "model_c_state": state_out,
         "model_c_hyperparams": {
             "input_dim": int(hyper["input_dim"]),
             "hidden_dim": int(hyper["hidden_dim"]),
@@ -383,7 +402,12 @@ def rebuild_model_c(state_dict, hyperparams) -> ResidualMLP:
     """Rebuild Model C from the bundle's state + hyperparams WITHOUT any
     training code (the self-contained bundle proof): construct
     ResidualMLP from model_c_hyperparams, load_state_dict, eval() —
-    ready for predict_proba at inference time."""
+    ready for predict_proba at inference time.
+
+    Accepts the bundle's NUMPY MIRRORS (see save_ensemble_bundle — the
+    determinism contract) and, for the in-memory train-stage handoff,
+    plain torch tensors; numpy entries convert back to tensors of the
+    same dtype/shape before load_state_dict."""
     hyper = dict(hyperparams)
     model = ResidualMLP(
         input_dim=int(hyper["input_dim"]),
@@ -392,7 +416,13 @@ def rebuild_model_c(state_dict, hyperparams) -> ResidualMLP:
         p=float(hyper["dropout"]),
         n_classes=int(hyper["n_classes"]),
     )
-    model.load_state_dict(state_dict)
+    tensors = {}
+    for k, v in dict(state_dict).items():
+        if isinstance(v, torch.Tensor):
+            tensors[k] = v
+        else:
+            tensors[k] = torch.from_numpy(np.ascontiguousarray(v))
+    model.load_state_dict(tensors)
     model.eval()
     return model
 

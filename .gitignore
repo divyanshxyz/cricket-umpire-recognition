@@ -8,3 +8,4 @@ data/processed/crops/
 .det.git
 /models/
 *.pt
+data/processed/features.npz

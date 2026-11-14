@@ -229,7 +229,11 @@ def load_features_npz(path) -> dict:
     - exact key set {features_raw, features_eng, labels, split, row_ids,
       failed_row_ids, failure_reasons} (missing OR extra key named);
     - features_raw (N, 51) and features_eng (N, 59), both float32
-      (wrong width/dtype named);
+      (wrong width/dtype named) — features_eng carries EXACTLY N rows
+      (features_raw's row count; a mismatched eng row count raises the
+      contract ValueError naming BOTH observed counts instead of being
+      silently zipped or tripping the adjacency guard as a raw
+      IndexError);
     - labels / split / row_ids all length N;
     - split values subset of {train, test}; label vocabulary subset of
       configs/classes.yaml canonical_classes;
@@ -298,6 +302,19 @@ def load_features_npz(path) -> dict:
             raise ValueError(
                 f"load_features_npz: features_eng must be float32, got "
                 f"{eng.dtype} — refusing to train on a re-typed artifact"
+            )
+        # Row-count parity (WR-01): features_eng must carry EXACTLY
+        # features_raw's row count. Checked BEFORE the labels/split/row_ids
+        # length block and BEFORE the adjacency guard — an eng matrix with
+        # more rows was silently accepted (downstream slicing consumed the
+        # first N rows of a misaligned artifact) and an eng matrix with
+        # fewer rows tripped the adjacency guard as a raw IndexError
+        # instead of the contract error.
+        if eng.shape[0] != n:
+            raise ValueError(
+                f"load_features_npz: features_eng must have {n} rows to "
+                f"match features_raw, got {eng.shape[0]} — misaligned "
+                "frozen artifact is rejected, never silently zipped"
             )
         lengths = {"labels": len(labels), "split": len(split), "row_ids": len(row_ids)}
         bad = {k: v for k, v in lengths.items() if v != n}

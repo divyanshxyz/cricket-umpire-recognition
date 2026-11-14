@@ -2,13 +2,16 @@
 (weight-free except the gated real-data test).
 
 Pins: the fail-closed loader contract over synthetic npz files (missing /
-extra key, wrong width, wrong dtype, NaN, out-of-vocabulary label,
-out-of-vocabulary split value, zero total rows, zero test rows), the
-cross-split adjacency trip (TRAIN-01), the sorted shared-encoder order
-(Pitfall 4), test-slice digest stability + tamper sensitivity (TEST rows
-only), the torch-free module source guard, and the REAL frozen npz
-contract re-proven at Phase 3 entry (shapes, 334/84, all six classes in
-both slices, zero cross-slice row overlap). No torch, no weights.
+extra key, wrong width, wrong dtype, features_eng row-count mismatch —
+WR-01: 11-vs-9 was silently accepted, 5-vs-9 tripped a raw IndexError,
+both now raise the contract ValueError naming both observed counts —
+NaN, out-of-vocabulary label, out-of-vocabulary split value, zero total
+rows, zero test rows), the cross-split adjacency trip (TRAIN-01), the
+sorted shared-encoder order (Pitfall 4), test-slice digest stability +
+tamper sensitivity (TEST rows only), the torch-free module source guard,
+and the REAL frozen npz contract re-proven at Phase 3 entry (shapes,
+334/84, all six classes in both slices, zero cross-slice row overlap).
+No torch, no weights.
 """
 
 import re
@@ -86,6 +89,31 @@ def test_loader_rejects_float64_dtype(tmp_path):
     arrays = _base_arrays()
     arrays["features_raw"] = arrays["features_raw"].astype(np.float64)
     with pytest.raises(ValueError, match="float64"):
+        load_features_npz(_write_npz(tmp_path, arrays))
+
+
+def test_loader_rejects_eng_row_count_longer_than_raw(tmp_path):
+    # WR-01: features_eng with MORE rows than features_raw (11 vs 9) was
+    # silently accepted — the loader returned the mis-shaped eng matrix and
+    # downstream slicing consumed the first N rows of a provably misaligned
+    # artifact. The contract ValueError names BOTH observed counts and
+    # fires before the adjacency guard.
+    arrays = _base_arrays()
+    arrays["features_eng"] = (np.arange(11 * 59, dtype=np.float32) * 1.5).reshape(11, 59)
+    with pytest.raises(ValueError, match=r"features_eng must have 9 rows"):
+        load_features_npz(_write_npz(tmp_path, arrays))
+
+
+def test_loader_rejects_eng_row_count_shorter_than_raw(tmp_path):
+    # WR-01 counterpart: features_eng with FEWER rows than features_raw
+    # (5 vs 9) used to fail closed only incidentally — a raw
+    # "IndexError: index 5 is out of bounds" from the adjacency guard's
+    # eng[i].tobytes() instead of the contract ValueError naming the key
+    # and the observed value. Both mismatch directions now raise the same
+    # contract error.
+    arrays = _base_arrays()
+    arrays["features_eng"] = (np.arange(5 * 59, dtype=np.float32) * 1.5).reshape(5, 59)
+    with pytest.raises(ValueError, match=r"got 5"):
         load_features_npz(_write_npz(tmp_path, arrays))
 
 

@@ -26,6 +26,25 @@ COLUMNS = [
     "crop_path", "phash_hex", "split", "conflict", "conflict_detail",
 ]
 
+# CSV formula-injection guard (IN-06 — ASVS V5/V14, the same treatment the
+# path-traversal guard in crops.py gives the crop sink). raw_label and other
+# cells derive from on-disk filename stems / folder names and are written
+# verbatim, so a dataset file named `=HYPERLINK("http://x","y").jpg` would
+# yield a manifest cell spreadsheet applications may execute on open. Cells
+# beginning with =/+/−/@ are prefixed with a single quote so they render as
+# text. No-op for the current dataset (0 such cells); drift-safe for future
+# ones. The sanitization is applied only at the CSV sink — the audit reads
+# the in-memory rows and is unaffected.
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _sanitize_csv_cell(value) -> str:
+    """Prefix spreadsheet-formula-looking cells so they render as text."""
+    text = str(value)
+    if text.startswith(_FORMULA_PREFIXES):
+        return "'" + text
+    return text
+
 
 def assemble_rows(records, class_cfg: dict, roots=None) -> list[dict]:
     """Run map_label per record and build the post-dedup manifest rows.
@@ -212,10 +231,15 @@ def write_manifest(rows, out_path) -> None:
 
     mkdir(parents=True, exist_ok=True) for data/processed; the CSV is utf-8
     with the csv module's standard dialect, newline="" per the csv docs.
+    Cells are sanitized against spreadsheet formula injection (IN-06) at
+    this sink only.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            writer.writerow(
+                {key: _sanitize_csv_cell(value) for key, value in row.items()}
+            )

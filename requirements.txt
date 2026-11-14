@@ -5,10 +5,14 @@ numpy<2.3
 pandas==2.2.*
 PyYAML==6.0.*
 scikit-learn==1.9.1
-tqdm
-pytest
-# Pillow and scipy arrive as ImageHash dependencies; left to pip resolution per RESEARCH.md
-Pillow
-scipy
+tqdm==4.70.1
+pytest==9.2.0
+# Pillow and scipy are determinism-relevant, not cosmetic (IN-08): phash
+# output depends on Pillow's resize and scipy's DCT behavior, so an upgrade
+# can change every hash and with it dedup/split results. Exact-pinned per
+# the header policy (versions read from the working venv); the audit's
+# parameter block records the installed versions alongside imagehash's.
+Pillow==13.0.0
+scipy==1.18.1
 # Phase 1 installs NO torch/ultralytics/opencv-python/Roboflow SDK/xgboost/streamlit
 # (heavy stack is Phase 2+ per RESEARCH.md Explicitly-NOT table)

@@ -313,6 +313,16 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
                 "min_class_flag", "min_class_split"):
         lines.append(f"{key}: {params.get(key, '')}")
     lines.append(f"imagehash version: {imagehash_version}")
+    # IN-08: Pillow and scipy are determinism-relevant (phash depends on
+    # Pillow's resize and scipy's DCT behavior) — record their installed
+    # versions alongside imagehash's so the T-01-06 trace identifies every
+    # dependency that can move the hashes.
+    for helper in ("Pillow", "scipy"):
+        try:
+            helper_version = importlib.metadata.version(helper)
+        except importlib.metadata.PackageNotFoundError:  # pragma: no cover - venv always has them
+            helper_version = "unknown"
+        lines.append(f"{helper} version: {helper_version}")
     lines.append(f"code version: {CODE_VERSION}")
 
     # Per-source census table (INGEST-01) with the expected-count sanity column.

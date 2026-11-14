@@ -93,7 +93,15 @@ from src.models.data import (
 # registry "input" kind and threads the train-stage meta to the eval
 # entry points (Model C's weights are handed off in-memory — no standalone
 # artifact until Plan 03-03's ensemble bundle).
-CODE_VERSION = "phase3-plan01-r2"
+# r3: Plan 03-03 behavior change — MODEL_REGISTRY gains D (features_eng
+# full 59; the soft-voting ensemble of Model C probabilities +
+# grid-tuned XGBoost + RandomForest): the train stage tunes both members
+# via the locked seeded GridSearchCV protocol (train rows only) and
+# persists the self-contained models/ensemble_model.joblib bundle (Model
+# C's weights stored inside), so the guarded eval votes over the exact
+# reported members; the param block gains the grid best-params/best-score
+# lines and the ensemble bundle sha256.
+CODE_VERSION = "phase3-plan01-r3"
 
 SEED = 42
 
@@ -127,6 +135,20 @@ MODEL_REGISTRY = {
         "eval_fn": "eval_model_c",
         "artifact": "ensemble_model.joblib",
         "input": "eng",
+    },
+    "D": {
+        "name": "Model D — soft-voting ensemble: Model C + grid-tuned XGBoost + RandomForest (TRAIN-06)",
+        "module": "src.models.ensemble",
+        "train_fn": "train_model_d",
+        "eval_fn": "eval_model_d",
+        "artifact": "ensemble_model.joblib",
+        "input": "eng",
+        # The ensemble bundle stores Model C's weights, so D's train stage
+        # consumes the same-run Model C handoff (train_model_d fails
+        # closed without it — the vote members must be the exact reported
+        # models). MODULE_ORDER trains C before D whenever both are
+        # selected.
+        "requires_prev_meta": "C",
     },
 }
 
@@ -342,18 +364,32 @@ def run_train_stage(npz_path, selected) -> dict:
         module = importlib.import_module(spec["module"])
         trainer = getattr(module, spec["train_fn"])
         X_model = _model_train_input(spec, arrays, train_idx)
-        meta_by_model[model_id] = trainer(X_model, y_int, le, models_dir, CODE_VERSION)
+        train_kwargs = {}
+        if spec.get("requires_prev_meta"):
+            # e.g. Model D consumes the same-run Model C handoff (the
+            # ensemble bundle stores C's weights) — train_model_d fails
+            # closed when the dependency is missing.
+            train_kwargs["prev_meta"] = meta_by_model
+        meta_by_model[model_id] = trainer(
+            X_model, y_int, le, models_dir, CODE_VERSION, **train_kwargs
+        )
         artifact_path = models_dir / spec["artifact"]
         if artifact_path.exists():
             print(
                 f"[ablation] wrote models/{spec['artifact']} "
                 f"(Model {model_id} trained)"
             )
+        elif model_id == "C":
+            print(
+                f"[ablation] Model C trained — no standalone artifact (its "
+                "weights ride the train-stage meta and are handed to the "
+                "eval stage in-memory; models/ensemble_model.joblib is "
+                "written when Model D trains in the same run)"
+            )
         else:
             print(
                 f"[ablation] Model {model_id} trained — no standalone "
-                f"artifact ({spec['artifact']} is built by a later plan; "
-                "weights handed to the eval stage in-memory)"
+                "artifact (weights handed to the eval stage in-memory)"
             )
     return {"digest": digest, "meta_by_model": meta_by_model, "n_train": n_train}
 
@@ -563,38 +599,73 @@ def _ablation_report_text(npz_path, census, metrics_by_model, meta_by_model,
     encoder_path = models_dir / "label_encoder.joblib"
     if encoder_path.exists():
         lines.append(f"models/label_encoder.joblib sha256: {sha256_of(encoder_path)}")
+    rendered_artifacts: set = set()
     for model_id in MODULE_ORDER:
         if model_id not in metrics_by_model:
             continue
-        artifact = models_dir / MODEL_REGISTRY[model_id]["artifact"]
-        if artifact.exists():
-            lines.append(
-                f"models/{MODEL_REGISTRY[model_id]['artifact']} sha256: "
-                f"{sha256_of(artifact)}"
-            )
+        artifact_name = MODEL_REGISTRY[model_id]["artifact"]
+        if artifact_name not in rendered_artifacts:
+            artifact = models_dir / artifact_name
+            if artifact.exists():
+                lines.append(
+                    f"models/{artifact_name} sha256: {sha256_of(artifact)}"
+                )
+                rendered_artifacts.add(artifact_name)
         meta = meta_by_model.get(model_id, {})
-        if meta:
+        if not meta:
+            continue
+        if "fold_best_epochs" in meta:
             lines.append(
                 f"Model {model_id} meta: fold_best_epochs "
-                f"{meta.get('fold_best_epochs', 'n/a')}; final_epochs "
-                f"{meta.get('final_epochs', 'n/a')}; batch_size "
-                f"{meta.get('batch_size', 'n/a')}"
+                f"{meta.get('fold_best_epochs')}; final_epochs "
+                f"{meta.get('final_epochs')}; batch_size "
+                f"{meta.get('batch_size')}"
             )
             lines.append(
-                f"Model {model_id} cv protocol: {meta.get('cv', 'n/a')} "
-                f"(n_folds {meta.get('n_folds', 'n/a')}); max_epochs "
-                f"{meta.get('max_epochs', 'n/a')}; early stop on val loss "
-                f"(patience {meta.get('patience', 'n/a')}); final epochs = "
+                f"Model {model_id} cv protocol: {meta.get('cv')} "
+                f"(n_folds {meta.get('n_folds')}); max_epochs "
+                f"{meta.get('max_epochs')}; early stop on val loss "
+                f"(patience {meta.get('patience')}); final epochs = "
                 "round(mean fold-best); augmentation inside each fold's "
                 "train portion only"
             )
-            lines.append(f"Model {model_id} scaler: {meta.get('scaler', 'n/a')}")
-            if meta.get("optimizer"):
-                lines.append(f"Model {model_id} optimizer: {meta['optimizer']}")
-            if meta.get("loss"):
-                lines.append(f"Model {model_id} loss: {meta['loss']}")
-            if meta.get("input"):
-                lines.append(f"Model {model_id} input: {meta['input']}")
+        if meta.get("scaler"):
+            lines.append(f"Model {model_id} scaler: {meta['scaler']}")
+        if meta.get("optimizer"):
+            lines.append(f"Model {model_id} optimizer: {meta['optimizer']}")
+        if meta.get("loss"):
+            lines.append(f"Model {model_id} loss: {meta['loss']}")
+        if meta.get("input"):
+            lines.append(f"Model {model_id} input: {meta['input']}")
+        if meta.get("members"):
+            lines.append(
+                f"Model {model_id} members: {meta['members']} — "
+                f"{meta.get('voting')} vote = {meta.get('soft_vote')}"
+            )
+        if meta.get("augmentation"):
+            lines.append(f"Model {model_id} augmentation: {meta['augmentation']}")
+        if meta.get("grid_xgb_best_params") is not None:
+            lines.append(
+                f"Model {model_id} grid protocol: GridSearchCV(scoring="
+                f"{meta.get('grid_scoring')}, cv={meta.get('grid_cv')}, "
+                f"n_jobs={meta.get('grid_n_jobs', 1)}) — "
+                f"{meta.get('grid_n_combos')} combos, tuned on the train "
+                "slice only"
+            )
+            lines.append(
+                f"Model {model_id} grid (XGBoost member): best params "
+                f"{meta['grid_xgb_best_params']}; best cv f1_macro "
+                f"{meta['grid_xgb_best_score']:.4f}"
+            )
+            lines.append(
+                f"Model {model_id} grid (RandomForest member): best params "
+                f"{meta['grid_rf_best_params']}; best cv f1_macro "
+                f"{meta['grid_rf_best_score']:.4f}"
+            )
+        if meta.get("model_c_source"):
+            lines.append(
+                f"Model {model_id} model C source: {meta['model_c_source']}"
+            )
     lines.append(
         "single-seed caveat: every number above is one seed-42 run "
         "(multi-seed mean±std deferred per CONTEXT)"

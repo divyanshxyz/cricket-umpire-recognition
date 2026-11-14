@@ -32,6 +32,7 @@ synthetic data only — no npz, no real training runs. Pinned contracts:
 import numpy as np
 import pytest
 import torch
+from sklearn.ensemble import RandomForestClassifier
 
 from src.models.data import canonical_classes, fit_label_encoder
 
@@ -53,10 +54,15 @@ from src.models.ensemble import (  # noqa: E402
 
 
 def _valid_proba(rows: int, seed: int) -> np.ndarray:
-    """Deterministic (rows, 6) proba rows summing to 1."""
+    """Deterministic (rows, 6) proba rows summing to 1.
+
+    float32 — the dtype torch softmax / xgboost predict_proba actually
+    produce. float64 rows would round (a + a + a) away from bit-exactness
+    (a 53-bit mantissa cannot always hold 3a); float32-sourced values are
+    exact in float64 (24-bit mantissas)."""
     rng = np.random.default_rng(seed)
     r = rng.random((rows, 6))
-    return (r / r.sum(axis=1, keepdims=True)).astype(np.float64)
+    return (r / r.sum(axis=1, keepdims=True)).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------

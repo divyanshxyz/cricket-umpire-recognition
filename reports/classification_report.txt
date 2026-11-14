@@ -45,7 +45,18 @@ weighted avg     0.7810    0.7738    0.7700        84
    macro avg     0.7698    0.7437    0.7412        84
 weighted avg     0.7786    0.7500    0.7526        84
 
-=== Model D (registered by a later plan) ===
+=== Model D — soft-voting ensemble: Model C + grid-tuned XGBoost + RandomForest (TRAIN-06) ===
 
-not trained yet (registered by a later plan)
+              precision    recall  f1-score   support
+
+        Four     0.7500    0.6000    0.6667         5
+    NoAction     0.6897    0.9524    0.8000        21
+      NoBall     0.9167    0.6875    0.7857        16
+         Out     1.0000    0.7000    0.8235        10
+         Six     1.0000    0.9091    0.9524        11
+        Wide     0.9091    0.9524    0.9302        21
+
+    accuracy                         0.8452        84
+   macro avg     0.8776    0.8002    0.8264        84
+weighted avg     0.8689    0.8452    0.8447        84
 

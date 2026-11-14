@@ -86,14 +86,21 @@ from src.models.data import (
 # spec) through the shared 5-fold train-CV protocol, guarded eval stage,
 # the three report artifacts (ablation table / 2x2 CM grid / per-model
 # classification sections), MODEL_REGISTRY with only "A" registered.
-CODE_VERSION = "phase3-plan01-r1"
+# r2: Plan 03-02 behavior change — two more trained models: MODEL_REGISTRY
+# gains B (features_eng[:, 0:51], AdamW + CosineAnnealingLR + label
+# smoothing 0.05) and C (features_eng full 59, residual MLP with
+# class-weighted CE); the runner selects each model's train input by its
+# registry "input" kind and threads the train-stage meta to the eval
+# entry points (Model C's weights are handed off in-memory — no standalone
+# artifact until Plan 03-03's ensemble bundle).
+CODE_VERSION = "phase3-plan01-r2"
 
 SEED = 42
 
 # Fixed model order for EVERY report surface (TRAIN-07/ordering: rows
 # render in fixed A, B, C, D order; the writers iterate MODULE_ORDER and
-# skip unregistered ids). Plan 03-01 registers only "A"; Plans 03-02/03-03
-# extend MODEL_REGISTRY with B/C/D rows (module/train_fn/eval_fn paths).
+# skip unregistered ids). Plan 03-01 registered only "A"; Plan 03-02 adds
+# B/C; Plan 03-03 adds D.
 MODULE_ORDER = ("A", "B", "C", "D")
 
 MODEL_REGISTRY = {
@@ -103,6 +110,23 @@ MODEL_REGISTRY = {
         "train_fn": "train_model_a",
         "eval_fn": "eval_model_a",
         "artifact": "baseline_ann.pt",
+        "input": "raw",
+    },
+    "B": {
+        "name": "Model B — torso-normalized MLP, AdamW + CosineAnnealingLR + label smoothing 0.05 (TRAIN-04)",
+        "module": "src.models.pose_mlp",
+        "train_fn": "train_model_b",
+        "eval_fn": "eval_model_b",
+        "artifact": "pose_mlp.pt",
+        "input": "eng51",
+    },
+    "C": {
+        "name": "Model C — residual MLP on engineered features, class-weighted CE (TRAIN-05)",
+        "module": "src.models.pose_mlp",
+        "train_fn": "train_model_c",
+        "eval_fn": "eval_model_c",
+        "artifact": "ensemble_model.joblib",
+        "input": "eng",
     },
 }
 
@@ -251,6 +275,28 @@ def _dry_run(npz_path) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _model_train_input(spec, arrays, train_idx) -> np.ndarray:
+    """Per-model train input by the registry "input" kind (Plan 03-02):
+    "raw" -> features_raw (Model A, min-max-scaled inside its train fn),
+    "eng51" -> features_eng[:, 0:51] (Model B — the 17 x (torso-normalized
+    x, y, conf) block per the Phase 2 engineered-feature contract), "eng"
+    -> features_eng full 59 (Model C/D). An unknown kind is a fail-closed
+    SystemExit naming the offender (V5 posture)."""
+    kind = spec.get("input", "raw")
+    eng = np.asarray(arrays["features_eng"])[train_idx]
+    if kind == "raw":
+        return np.asarray(arrays["features_raw"])[train_idx]
+    if kind == "eng51":
+        return eng[:, :51]
+    if kind == "eng":
+        return eng
+    raise SystemExit(
+        f"[ablation] MODEL_REGISTRY entry with unknown input kind {kind!r} "
+        "(expected raw | eng51 | eng) — refusing to train on an "
+        "unresolved feature slice (fail-closed)"
+    )
+
+
 def run_train_stage(npz_path, selected) -> dict:
     """Train each selected registered model on the frozen train slice.
 
@@ -259,7 +305,9 @@ def run_train_stage(npz_path, selected) -> dict:
     training; the shared LabelEncoder is fit once on
     configs/classes.yaml canonical_classes and persisted as
     models/label_encoder.joblib ({"encoder", "source"} per RESEARCH
-    Pattern 4). Returns {"digest", "meta_by_model", "n_train"}."""
+    Pattern 4). Each model's train input is resolved by its registry
+    "input" kind (Model A: features_raw; B: features_eng[:, 0:51]; C:
+    features_eng). Returns {"digest", "meta_by_model", "n_train"}."""
     seed_everything(SEED)
     digest = test_slice_digest(npz_path)
     manifest_path = REPO_ROOT / str(_paths_cfg()["outputs"]["manifest"])
@@ -274,7 +322,6 @@ def run_train_stage(npz_path, selected) -> dict:
     arrays = load_features_npz(npz_path)
     train_idx, _test_idx = split_masks(arrays["split"])
     le = fit_label_encoder(canonical_classes())
-    X_train_raw = arrays["features_raw"][train_idx]
     y_int = le.transform(arrays["labels"][train_idx])
     n_train = int(train_idx.size)
 
@@ -294,8 +341,20 @@ def run_train_stage(npz_path, selected) -> dict:
         spec = MODEL_REGISTRY[model_id]
         module = importlib.import_module(spec["module"])
         trainer = getattr(module, spec["train_fn"])
-        meta_by_model[model_id] = trainer(X_train_raw, y_int, le, models_dir, CODE_VERSION)
-        print(f"[ablation] wrote models/{spec['artifact']} (Model {model_id} trained)")
+        X_model = _model_train_input(spec, arrays, train_idx)
+        meta_by_model[model_id] = trainer(X_model, y_int, le, models_dir, CODE_VERSION)
+        artifact_path = models_dir / spec["artifact"]
+        if artifact_path.exists():
+            print(
+                f"[ablation] wrote models/{spec['artifact']} "
+                f"(Model {model_id} trained)"
+            )
+        else:
+            print(
+                f"[ablation] Model {model_id} trained — no standalone "
+                f"artifact ({spec['artifact']} is built by a later plan; "
+                "weights handed to the eval stage in-memory)"
+            )
     return {"digest": digest, "meta_by_model": meta_by_model, "n_train": n_train}
 
 
@@ -328,9 +387,12 @@ def evaluate_and_report(npz_path, expected_digest: str, selected, meta_by_model,
 
     Predictions come from proba.argmax(axis=1) — numpy's deterministic
     first-index tie-break (TRAIN-03/precision backstop); the eval never
-    reorders proba columns away from the shared encoder order. Models not
-    selected/registered are skipped (writers iterate MODULE_ORDER), so
-    report rows always render in fixed A, B, C, D order."""
+    reorders proba columns away from the shared encoder order. The
+    train-stage meta is threaded to every evaluator (Plan 03-02: Model C
+    rebuilds from the in-memory model_c_state handoff; A/B reload their
+    artifacts from disk and ignore it). Models not selected/registered
+    are skipped (writers iterate MODULE_ORDER), so report rows always
+    render in fixed A, B, C, D order."""
     assert_test_slice_unchanged(npz_path, expected_digest)
     models_dir = Path(models_dir) if models_dir is not None else REPO_ROOT / "models"
     reports_dir = Path(reports_dir) if reports_dir is not None else REPO_ROOT / "reports"
@@ -347,7 +409,7 @@ def evaluate_and_report(npz_path, expected_digest: str, selected, meta_by_model,
         spec = MODEL_REGISTRY[model_id]
         module = importlib.import_module(spec["module"])
         evaluator = getattr(module, spec["eval_fn"])
-        proba = evaluator(arrays, test_idx, le, models_dir)
+        proba = evaluator(arrays, test_idx, le, models_dir, meta_by_model.get(model_id))
         y_pred = proba.argmax(axis=1)
         metrics_by_model[model_id] = {
             "accuracy": float(accuracy_score(y_test, y_pred)),
@@ -527,6 +589,12 @@ def _ablation_report_text(npz_path, census, metrics_by_model, meta_by_model,
                 "train portion only"
             )
             lines.append(f"Model {model_id} scaler: {meta.get('scaler', 'n/a')}")
+            if meta.get("optimizer"):
+                lines.append(f"Model {model_id} optimizer: {meta['optimizer']}")
+            if meta.get("loss"):
+                lines.append(f"Model {model_id} loss: {meta['loss']}")
+            if meta.get("input"):
+                lines.append(f"Model {model_id} input: {meta['input']}")
     lines.append(
         "single-seed caveat: every number above is one seed-42 run "
         "(multi-seed mean±std deferred per CONTEXT)"

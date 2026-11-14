@@ -98,11 +98,15 @@ def test_train_residual_mlp_accepts_width_59():
 
 
 def test_compute_class_weights_inverse_frequency_hand_computed():
-    # counts {0: 4, 1: 8, 2: 2}, N=12, C=3 -> [12/(3*4), 12/(3*8), 12/(3*2)].
+    # counts {0: 4, 1: 8, 2: 2}, N=14, C=3 -> [N/(3*4), N/(3*8), N/(3*2)]
+    # = [14/12, 14/24, 14/6] = [7/6, 7/12, 7/3]. (The plan's "= [1.0, 0.5,
+    # 2.0]" expansion was arithmetically impossible for these counts —
+    # N/(C*n_c) with N=14 is the locked formula authority, TRAIN-05 /
+    # RESEARCH A7; Rule 1 plan-bug fix, 03-02.)
     y = np.array([0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2])
     w = compute_class_weights(y, 3)
     assert w.dtype == torch.float32
-    expected = torch.tensor([1.0, 0.5, 2.0])
+    expected = torch.tensor([14 / 12, 14 / 24, 14 / 6])
     assert torch.allclose(w, expected, atol=1e-6)
 
 

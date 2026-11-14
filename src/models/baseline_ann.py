@@ -80,14 +80,35 @@ def _assert_trainable_batch(n_rows: int) -> None:
         )
 
 
-def _run_batch_epochs(model, X, y, loss_fn, epochs: int, batch_size: int) -> None:
+def _resolve_optimization(model, optimizer_factory):
+    """Resolve (optimizer, scheduler_or_None) for one training run.
+
+    optimizer_factory=None -> the spec optimizer (Adam, TRAIN-03) with no
+    scheduler — Model A's exact behavior. A factory (Plan 03-02's Model
+    B/C injection) is called as optimizer_factory(model) and may return
+    either a bare torch.optim.Optimizer or an (optimizer, scheduler) pair
+    whose scheduler (possibly None) is stepped ONCE PER EPOCH by the
+    training loops below."""
+    if optimizer_factory is None:
+        return _make_optimizer(model), None
+    built = optimizer_factory(model)
+    if isinstance(built, tuple):
+        optimizer, scheduler = built
+        return optimizer, scheduler
+    return built, None
+
+
+def _run_batch_epochs(model, X, y, loss_fn, epochs: int, batch_size: int,
+                      optimizer_factory=None) -> None:
     """One fixed-epoch training pass — manual torch.randperm batching, no
     DataLoader, no workers (RESEARCH Pattern 2 determinism). A trailing
     batch of size 1 is SKIPPED (train-mode BatchNorm1d crashes on
-    batch_size=1, verified Pitfall 2); eval-mode passes are unaffected."""
+    batch_size=1, verified Pitfall 2); eval-mode passes are unaffected.
+    A per-epoch scheduler (when the optimizer_factory supplies one) is
+    stepped at the end of every epoch."""
     n = X.shape[0]
     _assert_trainable_batch(n)
-    optimizer = _make_optimizer(model)
+    optimizer, scheduler = _resolve_optimization(model, optimizer_factory)
     for _epoch in range(1, epochs + 1):
         model.train()
         perm = torch.randperm(n)
@@ -98,20 +119,26 @@ def _run_batch_epochs(model, X, y, loss_fn, epochs: int, batch_size: int) -> Non
             optimizer.zero_grad()
             loss_fn(model(X[idx]), y[idx]).backward()
             optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
 
 
 def _run_early_stopped_epochs(model, X, y, X_val, y_val, loss_fn,
                               max_epochs: int, patience: int,
-                              batch_size: int) -> int:
+                              batch_size: int,
+                              optimizer_factory=None) -> int:
     """One fold's training pass with early stopping on val loss.
 
     Val loss is computed under model.eval() + torch.no_grad() on the CLEAN
     (never-augmented) fold-val slice. The best-val-loss state_dict is
     restored before returning, and the fold's best epoch (1-based) is
-    returned for the final-epochs derivation (round(mean fold-best))."""
+    returned for the final-epochs derivation (round(mean fold-best)).
+    A per-epoch scheduler (when the optimizer_factory supplies one) is
+    stepped at the end of every non-breaking epoch; the early-stop break
+    ends the schedule with training."""
     n = X.shape[0]
     _assert_trainable_batch(n)
-    optimizer = _make_optimizer(model)
+    optimizer, scheduler = _resolve_optimization(model, optimizer_factory)
     best_val = float("inf")
     best_state = None
     best_epoch = 0
@@ -138,6 +165,8 @@ def _run_early_stopped_epochs(model, X, y, X_val, y_val, loss_fn,
             stale += 1
             if stale >= patience:
                 break
+        if scheduler is not None:
+            scheduler.step()
     if best_state is not None:
         model.load_state_dict(best_state)
     return best_epoch
@@ -145,7 +174,8 @@ def _run_early_stopped_epochs(model, X, y, X_val, y_val, loss_fn,
 
 def train_with_cv(X_train, y_train, model_factory, loss_fn, seed: int = 42,
                   max_epochs: int = 150, patience: int = 15,
-                  batch_size: int = 32, augment_fn=None, aug_seed: int = 42):
+                  batch_size: int = 32, augment_fn=None, aug_seed: int = 42,
+                  optimizer_factory=None):
     """The shared 5-fold stratified train-CV protocol (Model A here; B/C/D
     in Plan 03-02) — epoch/schedule selection on TRAIN ROWS ONLY; the test
     set is never loaded during selection (CONTEXT-locked discipline).
@@ -158,6 +188,13 @@ def train_with_cv(X_train, y_train, model_factory, loss_fn, seed: int = 42,
     best-val-loss state_dict restored) and record the fold's best epoch.
     After all folds: train the final model on the full (augmented) train
     slice for round(mean(fold best epochs)) fixed epochs.
+
+    optimizer_factory (Plan 03-02): optional injection of a per-model
+    optimizer stack — called as optimizer_factory(model) for EVERY
+    training run (each fold AND the final model), returning either a bare
+    Optimizer or an (optimizer, scheduler) pair whose scheduler is stepped
+    once per epoch. The default None keeps Model A on the spec Adam with
+    no scheduler (backward-compatible).
 
     seed_everything(seed) runs at entry so every call is deterministic and
     order-independent (re-runs byte-identical per RESEARCH Pattern 2).
@@ -203,6 +240,7 @@ def train_with_cv(X_train, y_train, model_factory, loss_fn, seed: int = 42,
             max_epochs,
             patience,
             batch_size,
+            optimizer_factory,
         )
         fold_best_epochs.append(int(best_epoch))
 
@@ -218,6 +256,7 @@ def train_with_cv(X_train, y_train, model_factory, loss_fn, seed: int = 42,
         loss_fn,
         final_epochs,
         batch_size,
+        optimizer_factory,
     )
     meta = {
         "fold_best_epochs": fold_best_epochs,
@@ -356,13 +395,15 @@ def train_model_a(X_train_raw, y_int, le, models_dir, code_version: str) -> dict
     return meta
 
 
-def eval_model_a(arrays, test_idx, le, models_dir) -> np.ndarray:
+def eval_model_a(arrays, test_idx, le, models_dir, meta=None) -> np.ndarray:
     """MODEL_REGISTRY["A"] eval entry: reload baseline_ann.pt from disk
     (proving the save/load contract end-to-end), transform the test slice
     with the TRAIN-FIT scaler (transform-only — never a refit,
     TRAIN-03/boundary), return fp32 softmax probas (columns in shared
     encoder int order). The test slice is loaded exactly once per run by
-    the guarded eval stage and only sliced here."""
+    the guarded eval stage and only sliced here. ``meta`` is accepted for
+    dispatch uniformity (Plan 03-02 threads the train-stage meta to every
+    evaluator; A reloads everything from disk and ignores it)."""
     ckpt = load_baseline_checkpoint(Path(models_dir) / "baseline_ann.pt")
     scaler = ckpt["scaler"]
     model = MiliBaseline(n_classes=len(ckpt["classes"]))

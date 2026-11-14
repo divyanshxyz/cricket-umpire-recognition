@@ -130,17 +130,29 @@ def classify_row_path(row, base: Path):
     reason "path_escape" (resolves outside the root — never followed) or
     "file_missing" (inside the root but not an existing file; a directory
     counts as missing — ultralytics would scan it). Pure path logic, no
-    model, no I/O beyond exists checks."""
+    model, no I/O beyond exists checks.
+
+    The whole resolution is contained (CR-01): manifest path fields are
+    crafted-input territory, and a hostile string can make resolve() or
+    the exists-check itself raise (verified: an embedded null byte raises
+    ``ValueError: stat: embedded null character in path``). Such a string
+    is the same threat class as a genuine escape — mapped to
+    "path_escape" (never followed) so the guard never raises and the
+    batch never aborts on it (CONTEXT locked never-raises decision)."""
     crop = str(row.get("crop_path", "") or "").strip()
     rel = crop or str(row.get("original_path", "") or "").strip()
-    candidate = Path(rel)
-    resolved = candidate.resolve() if candidate.is_absolute() else (base / candidate).resolve()
     try:
+        candidate = Path(rel)
+        resolved = (
+            candidate.resolve()
+            if candidate.is_absolute()
+            else (base / candidate).resolve()
+        )
         resolved.relative_to(base)
-    except ValueError:
+        if not resolved.is_file():
+            return None, "file_missing"
+    except (ValueError, OSError):
         return None, "path_escape"
-    if not resolved.is_file():
-        return None, "file_missing"
     return resolved, None
 
 

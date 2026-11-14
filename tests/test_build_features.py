@@ -71,6 +71,35 @@ def test_path_escape_rejected_and_loop_continues(tmp_path):
     assert len(ok_rows) == 1 and ok_rows[0][4] == "r3"
 
 
+def test_crafted_path_strings_are_typed_not_fatal(tmp_path):
+    # CR-01 regression: a hostile manifest path string (embedded null byte)
+    # makes resolve()/stat raise ValueError INSIDE the path guard itself —
+    # the guard must contain it as a typed path_escape row (never followed,
+    # never fatal) and the loop must continue to the next row. Before the
+    # fix this crashed the whole build (guard call sat outside the per-row
+    # try/except), violating the locked never-raises-mid-batch decision.
+    ok_file = tmp_path / "img_ok.jpg"
+    ok_file.write_bytes(b"x")
+    manifest = _manifest(
+        [
+            ("r_null", "", "foo\x00bar.jpg", "Six", "train"),
+            ("r_ok", "", "img_ok.jpg", "Wide", "test"),
+        ]
+    )
+    ok_rows, failures, stats = extract_rows(manifest, tmp_path, _ok_extract())
+    assert stats["path_escape"] == 1  # the null-byte row, typed and counted
+    assert stats["ok"] == 1  # the loop continued past the hostile row
+    assert stats["other"] == 0 and stats["file_missing"] == 0
+    assert failures == [("r_null", "path_escape")]
+    assert len(ok_rows) == 1 and ok_rows[0][4] == "r_ok"
+    # The guard function itself (also used by the --dry-run loop) returns
+    # the typed pair instead of raising.
+    path, reason = classify_row_path(
+        {"crop_path": "", "original_path": "foo\x00bar.jpg"}, tmp_path
+    )
+    assert path is None and reason == "path_escape"
+
+
 def test_file_missing_rejected_not_extracted(tmp_path):
     # A path inside the root that is not an existing file is a typed
     # file_missing; extraction is never attempted on it.

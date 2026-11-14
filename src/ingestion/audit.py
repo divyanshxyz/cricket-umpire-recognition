@@ -22,8 +22,12 @@ from .dedup import roboflow_stem
 # Static code version tag for the determinism parameter block (Pitfall 9:
 # the audit records thresholds + tool versions + a code version — never a
 # wall-clock timestamp, so re-runs stay byte-identical). Bump when the
-# pipeline's behavior-affecting code changes.
-CODE_VERSION = "phase1-plan03"
+# pipeline's behavior-affecting code changes. r1: the 2026-11-14 review-fix
+# batch (WR-01..WR-04, IN-01..IN-10) — fail-closed leak check, crop stage
+# after the leak check + per-run crops_dir reset, base-relative discovery,
+# EXIF-transpose hashing. Outputs are byte-identical on the committed
+# dataset; the tag marks the code boundary for future drift forensics.
+CODE_VERSION = "phase1-plan03-r1"
 
 # Expected per-source census (RESEARCH.md Verified Dataset Census, read from
 # disk 2026-11-14) — the sanity column the report renders against the actual

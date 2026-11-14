@@ -13,7 +13,7 @@ min_class_split: 10
 imagehash version: 4.3.2
 Pillow version: 13.0.0
 scipy version: 1.18.1
-code version: phase1-plan03
+code version: phase1-plan03-r1
 
 ## Per-source census
 

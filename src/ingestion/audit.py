@@ -1,11 +1,14 @@
-"""Console audit summary — no silent exclusion.
+"""Console audit summary + the full audit report writer — no silent exclusion.
 
 Every excluded/conditional/no_box record is counted explicitly (RESEARCH.md
 anti-pattern: exclusions must never be dropped silently). Per-source
-[ok]/[warn] lines keep the prior-script console convention. The file surface
-(reports/dedup_audit.md) lands in Plan 03; this module builds one string that
-the CLI prints in a single print call. No wall-clock timestamps anywhere
-(determinism, Pitfall 9).
+[ok]/[warn] lines keep the prior-script console convention.
+:func:`build_console_summary` builds the stage-level console text;
+:func:`build_audit_report` builds the full report that the CLI surfaces
+twice (INGEST-07) — printed to the console AND written to
+reports/dedup_audit.md — from the SAME string, so the two can never diverge.
+No wall-clock timestamps anywhere (determinism, Pitfall 9): two consecutive
+full runs produce byte-identical output.
 """
 
 from __future__ import annotations
@@ -14,19 +17,48 @@ import importlib.metadata
 from collections import Counter
 
 from .adapters import bbox_row_class_counts, decode_events, invalid_box_events
+from .dedup import roboflow_stem
+
+# Static code version tag for the determinism parameter block (Pitfall 9:
+# the audit records thresholds + tool versions + a code version — never a
+# wall-clock timestamp, so re-runs stay byte-identical). Bump when the
+# pipeline's behavior-affecting code changes.
+CODE_VERSION = "phase1-plan03"
+
+# Expected per-source census (RESEARCH.md Verified Dataset Census, read from
+# disk 2026-11-14) — the sanity column the report renders against the actual
+# on-disk counts so re-runs catch data drift immediately.
+EXPECTED_CENSUS = {
+    "roboflow_umpire_wide": 2497,
+    "umpire_gestures": 145,
+    "archive": 390,
+    "archive3": 390,
+    "archive1": 312,
+    "inception": 843,
+}
+
+# Roboflow exports' unique source-frame stems (.rf.<32hex> stripped) —
+# 2,497 roboflow_umpire_wide files come from only 558 stems (1,939 baked-in
+# augmented copies, RESEARCH.md Pitfall 1).
+EXPECTED_STEMS = {
+    "roboflow_umpire_wide": 558,
+}
 
 
 def build_console_summary(source_rows, records, survivors, removed,
-                          stem_removed=None, crop_stats=None) -> str:
+                          stem_removed=None, crop_stats=None,
+                          conditional_decision=None) -> str:
     """Build the console audit text (returned as one string; the CLI prints it).
 
     Sections: per-source [ok]/[warn] lines (parsed count vs on-disk census +
     raw class names), duplicates removed (Layer A stem groups and Layer B
     phash as SEPARATE lines — RESEARCH.md Pitfall 1), exclusions counted by
     raw label, per-class post-dedup counts, decode-replacement events, and
-    the tool version (full parameter block lands in Plan 03's report file).
+    the tool version (full parameter block is written to the report file).
     ``stem_removed``/``crop_stats`` are optional kwargs added by Plan 02;
-    the frozen 4-positional-arg contract is unchanged.
+    ``conditional_decision`` (Plan 03's strict >30 evaluation result) renders
+    the decision per conditional class when provided. The frozen
+    4-positional-arg contract is unchanged.
     """
     lines: list[str] = []
     lines.append("=== Phase 1 ingestion audit (walking skeleton) ===")
@@ -88,7 +120,15 @@ def build_console_summary(source_rows, records, survivors, removed,
         lines.append(f"  excluded as class: {len(excluded)} ({detail})")
     else:
         lines.append("  excluded as class: 0")
-    lines.append(f"  conditional (LegBye/DeadBall >30 rule evaluated in Plan 03): {len(conditional)}")
+    if conditional_decision is None:
+        lines.append(f"  conditional (LegBye/DeadBall >30 rule): {len(conditional)}")
+    else:
+        for cls in sorted(conditional_decision):
+            d = conditional_decision[cls]
+            verdict = "included" if d["included"] else "excluded"
+            lines.append(
+                f"  conditional {cls}: {d['count']} usable -> {verdict} ({d['reason']})"
+            )
     lines.append(f"  no_box: {len(no_box)}")
     multibox = [r for r in records if r.multibox]
     lines.append(
@@ -141,6 +181,264 @@ def build_console_summary(source_rows, records, survivors, removed,
     lines.append(f"imagehash version: {imagehash_version}")
     lines.append(
         "Parameters: phash threshold + pad_frac + split params from configs/paths.yaml; "
-        "full parameter block lands in reports/dedup_audit.md (Plan 03)"
+        "full parameter block written to reports/dedup_audit.md"
+    )
+    return "\n".join(lines)
+
+
+def build_audit_report(source_rows, records, survivors, removed, stem_removed,
+                       rows, params, class_cfg, conditional_decision,
+                       split_counts, leaks, crop_stats=None) -> str:
+    """Build the full audit report (reports/dedup_audit.md content).
+
+    INGEST-07 presentation resolution: the CLI surfaces this report TWICE —
+    printed to the console on every run AND written to reports/dedup_audit.md
+    — from this one string, so console and file can never diverge.
+
+    Section contract (01-03-PLAN.md Task 1 + must_haves): parameter block
+    (no wall-clock timestamps — byte-identical re-runs are the Phase 3
+    frozen-test precondition, threat T-01-06); per-source census table with
+    the RESEARCH.md expected-count sanity column and the audit-only
+    precomputed-csv row; totals with the 1250-1450 sanity band; stem-group
+    and phash removals as SEPARATE lines (Pitfall 1); every exclusion
+    counted (DRS/umpire/non_umpire/no_box/multibox/invalid boxes/unknown);
+    conditional-class decision lines from evaluate_conditional (INGEST-06
+    strict >30); the explicit crop-rule log for the single umpire-class bbox
+    row + the research-driven crop-rule adjustment note; conflicts with top
+    examples; the per-class post-dedup train/test table with <30
+    collect-more flags (the Four contingency surfaces automatically); and
+    the cross-split leak line (must read 0).
+    """
+    threshold = int(params.get("phash_threshold", 8))
+    min_class_flag = int(params.get("min_class_flag", 30))
+    lines: list[str] = []
+    lines.append("# Dataset ingestion + leak-free dedup audit (Phase 1)")
+    lines.append("")
+    lines.append(
+        "Single source of truth for Phases 2-5: census, dedup, exclusions, the "
+        "guarded post-dedup split, and the cross-split leak check. Deterministic: "
+        "re-running src/data_ingestion.py reproduces this report and "
+        "data/processed/manifest.csv byte-identically (no wall-clock timestamps)."
+    )
+
+    # Parameter block (Pitfall 9; threat T-01-06 determinism mitigation).
+    lines.append("")
+    lines.append("## Parameter block")
+    lines.append("")
+    try:
+        imagehash_version = importlib.metadata.version("imagehash")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover - venv always has it
+        imagehash_version = "unknown"
+    for key in ("phash_threshold", "pad_frac", "test_size", "random_state",
+                "min_class_flag", "min_class_split"):
+        lines.append(f"{key}: {params.get(key, '')}")
+    lines.append(f"imagehash version: {imagehash_version}")
+    lines.append(f"code version: {CODE_VERSION}")
+
+    # Per-source census table (INGEST-01) with the expected-count sanity column.
+    lines.append("")
+    lines.append("## Per-source census")
+    lines.append("")
+    lines.append(
+        "| source | root | family | raw count | expected (census) | sanity | raw classes |"
+    )
+    lines.append("|---|---|---|---|---|---|---|")
+    for row in source_rows:
+        name = row["name"]
+        if row["family"] == "precomputed-csv":
+            lines.append(
+                f"| {name} | {row['root']} | {row['family']} | {row['image_count']} rows "
+                "| - | - | audit-only, excluded from the image pipeline |"
+            )
+            continue
+        vocab = (
+            sorted({str(r.raw_label) for r in records if r.source == name and r.raw_label})
+            or row["raw_classes"]
+        )
+        classes = ", ".join(vocab) if vocab else "-"
+        expected = EXPECTED_CENSUS.get(name)
+        if expected is None:
+            expected_cell, sanity = "-", "-"
+        elif row["image_count"] == expected:
+            expected_cell, sanity = expected, "ok"
+        else:
+            expected_cell = expected
+            sanity = f"MISMATCH (expected {expected})"
+        lines.append(
+            f"| {name} | {row['root']} | {row['family']} | {row['image_count']} "
+            f"| {expected_cell} | {sanity} | {classes} |"
+        )
+    # Roboflow unique-stem sanity: 2,497 files from 558 source frames.
+    for name in sorted(EXPECTED_STEMS):
+        stems = {
+            roboflow_stem(r.relpath)
+            for r in records
+            if r.source == name and r.family == "roboflow-yolo"
+        }
+        expected = EXPECTED_STEMS[name]
+        verdict = "ok" if len(stems) == expected else f"MISMATCH (expected {expected})"
+        lines.append(f"{name} unique stems: {len(stems)} (expected {expected}) [{verdict}]")
+
+    # Totals with the sanity band (RESEARCH.md dedup expectations, lines 124-127).
+    raw_total = sum(
+        row["image_count"] for row in source_rows
+        if row["family"] != "precomputed-csv"
+    )
+    kept = len(survivors)
+    lines.append("")
+    lines.append("## Totals")
+    lines.append("")
+    lines.append(f"Raw image files: {raw_total}")
+    lines.append(f"Kept after dedup: {kept} (sanity band 1250-1450)")
+    lines.append(
+        "Sanity band verdict: "
+        + ("in band" if 1250 <= kept <= 1450
+           else "OUT OF BAND - investigate dedup before Phase 2")
+    )
+    lines.append(f"Manifest class rows (post conditional evaluation): {len(rows)}")
+
+    # Duplicates removed — two layers, separate lines (Pitfall 1: stem-dup
+    # and phash-dup removals must never be merged into one number).
+    lines.append("")
+    lines.append("## Duplicates removed")
+    lines.append("")
+    stem_removed = stem_removed or []
+    lines.append(f"Duplicates removed - Roboflow stem-groups: {len(stem_removed)}")
+    stem_by_source = Counter(r.source for r in stem_removed)
+    for src in sorted(stem_by_source):
+        lines.append(f"  {src}: {stem_by_source[src]}")
+    lines.append(f"Duplicates removed - phash near-duplicates: {len(removed)}")
+    removed_by_source = Counter(r.source for r in removed)
+    for src in sorted(removed_by_source):
+        lines.append(f"  {src}: {removed_by_source[src]}")
+
+    # Exclusions — every exclusion counted, never silent (RESEARCH.md
+    # anti-pattern; INGEST-06's exclusion behavior is itself an audit deliverable).
+    excluded = [r for r in records if r.outcome == "excluded"]
+    no_box = [r for r in records if r.outcome == "no_box"]
+    multibox = [r for r in records if r.multibox]
+    unknown = [r for r in records if r.outcome == "unknown"]
+    lines.append("")
+    lines.append("## Exclusions (counted, never written as class rows)")
+    lines.append("")
+    if excluded:
+        by_label = Counter(str(r.raw_label) for r in excluded)
+        for label in sorted(by_label):
+            lines.append(f"{label}: {by_label[label]} excluded")
+    else:
+        lines.append("no excluded-as-class records")
+    lines.append(f"Zero-box images excluded as no_box: {len(no_box)}")
+    lines.append(f"Multi-box images flagged (largest-area box wins): {len(multibox)}")
+    lines.append(
+        f"Invalid bbox rows rejected (out-of-range/malformed, ASVS V5): "
+        f"{len(invalid_box_events())}"
+    )
+    lines.append(f"Label decode replacements (utf-8, errors=replace): {decode_events()}")
+    lines.append(f"unknown: {len(unknown)} (unknown labels abort the run — this stays 0)")
+
+    # Conditional classes — decision lines from evaluate_conditional
+    # (INGEST-06 strict >30 boundary; zero-usable classes are never omitted).
+    lines.append("")
+    lines.append(
+        f"Conditional classes (INGEST-06: included only when the usable count "
+        f"is STRICTLY greater than {min_class_flag}):"
+    )
+    for cls in sorted(conditional_decision or {}):
+        d = conditional_decision[cls]
+        verdict = "included" if d["included"] else "excluded"
+        lines.append(f"{cls}: {d['count']} {verdict} (conditional class, {d['reason']})")
+
+    # Crop rule — explicit log of the single umpire-class bbox row plus the
+    # research-driven adjustment note (CONTEXT 'largest umpire box' was
+    # unimplementable: the umpire annotation class carries 1 bbox row).
+    distribution = bbox_row_class_counts()
+    umpire_rows = distribution.get("umpire", 0)
+    lines.append("")
+    lines.append("## Crop rule (research-driven adjustment, logged explicitly)")
+    lines.append("")
+    if distribution:
+        dist = ", ".join(f"{cls} {n}" for cls, n in distribution.items())
+        lines.append(f"bbox rows seen by class: {dist} (total {sum(distribution.values())})")
+    lines.append(
+        f"umpire-class bbox rows seen: {umpire_rows} — logged explicitly; the "
+        "umpire annotation class has 1 bbox row across the 2,497-image export "
+        "because boxes carry the signal class (the umpire performing it)"
+    )
+    lines.append(
+        "Adjustment note: the CONTEXT decision 'when multiple umpire boxes exist, "
+        "crop the largest-area umpire box' was unimplementable as written — the "
+        "umpire class has 1 bbox row across 2,497 images. Operative rule: crop the "
+        "largest-area annotated box of ANY class (every box denotes the umpire); "
+        "the row's canonical class = that box's class. Intent preserved: every "
+        "Roboflow image still yields the umpire crop with 15% clamped padding."
+    )
+
+    # Label conflicts (Pitfall 7 — frequent, not rare).
+    conflict_rows = [r for r in rows if r.get("conflict")]
+    lines.append("")
+    if conflict_rows:
+        details = Counter(str(r.get("conflict_detail") or "") for r in conflict_rows)
+        lines.append(
+            f"Label conflicts resolved (tier priority, majority at equal tier, "
+            f"lexicographic tiebreak): {len(conflict_rows)}"
+        )
+        lines.append("  top conflict examples (discarded labels x count):")
+        for detail, n in sorted(details.items(), key=lambda kv: (-kv[1], kv[0]))[:5]:
+            lines.append(f"    {detail} x{n}")
+    else:
+        lines.append("Label conflicts resolved: 0")
+
+    # Per-class post-dedup table with the assigned split + <30 collect-more
+    # flags (the Four contingency from STATE.md surfaces automatically).
+    lines.append("")
+    lines.append("## Per-class post-dedup counts (assigned split)")
+    lines.append("")
+    lines.append("  Class         Train    Test   Total")
+    for cls in sorted(split_counts or {}):
+        sides = split_counts[cls]
+        total = sides["train"] + sides["test"]
+        lines.append(
+            f"  {cls:<12} {sides['train']:>6} {sides['test']:>7} {total:>7}"
+        )
+    for cls, sides in sorted((split_counts or {}).items()):
+        total = sides["train"] + sides["test"]
+        if total < min_class_flag:
+            lines.append(
+                f"FLAG {cls}: {total} usable samples < {min_class_flag} — collect "
+                f"more '{cls}' images before Phase 2 (collect-more contingency)"
+            )
+
+    # Cross-split leak check — the phase's success criterion line.
+    lines.append("")
+    lines.append(f"Cross-split phash leaks (Hamming <= {threshold}): {leaks}")
+    if leaks == 0:
+        lines.append(
+            "  zero near-duplicate pairs across the train/test boundary — "
+            "leak-free split (dedup merged every pair within the threshold "
+            "BEFORE the split existed)"
+        )
+
+    # Crop stage outcome.
+    if crop_stats is not None:
+        lines.append("")
+        if crop_stats.get("dry_run"):
+            lines.append(
+                "Crops (dry-run — nothing written): Roboflow rows would be "
+                f"cropped, {crop_stats.get('non_roboflow', 0)} non-Roboflow rows "
+                "stay full-image"
+            )
+        else:
+            lines.append(
+                f"Crops written (crop_<row_id>.jpg): {crop_stats.get('written', 0)}, "
+                f"non-Roboflow full-image rows {crop_stats.get('non_roboflow', 0)}, "
+                f"invalid/degenerate {crop_stats.get('invalid', 0)}, "
+                f"failed {crop_stats.get('failed', 0)}"
+            )
+
+    lines.append("")
+    lines.append(
+        "Determinism contract: sorted walks, fixed random_state, static code "
+        "version tag, no wall-clock timestamps — two consecutive full runs "
+        "produce byte-identical manifest.csv and dedup_audit.md."
     )
     return "\n".join(lines)

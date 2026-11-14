@@ -3,8 +3,11 @@
 
 Stage order per the RESEARCH.md architecture diagram:
 discover -> parse -> canonical -> dedup (two layers) -> crop survivors ->
-manifest -> audit (console). --dry-run runs everything in memory and writes
-nothing (the crop stage counts would-be crops instead).
+conditional >30 evaluation -> split (guarded, AFTER dedup) -> leak check ->
+write artifacts (manifest.csv + reports/dedup_audit.md) -> audit (console
+summary + the full report printed AND written — INGEST-07). --dry-run runs
+everything in memory and writes nothing (the crop stage counts would-be
+crops; the report is printed but not written).
 
 Flags:
   --config   paths.yaml location (default configs/paths.yaml; classes.yaml is
@@ -34,12 +37,18 @@ from ingestion.adapters import (
     parse_roboflow,
     stamp_source,
 )
-from ingestion.audit import build_console_summary
+from ingestion.audit import build_audit_report, build_console_summary
 from ingestion.canonical import UnknownLabelError, load_class_map, map_label
 from ingestion.crops import crop_row
 from ingestion.dedup import cluster_by_phash, phash_file, stem_groups
 from ingestion.discover import discover_sources
-from ingestion.manifest import assemble_rows, write_manifest
+from ingestion.manifest import (
+    assemble_rows,
+    assign_split,
+    evaluate_conditional,
+    leak_check,
+    write_manifest,
+)
 
 # Family -> parser dispatch. roboflow-yolo and folder-label are seam stubs
 # returning [] until Plan 02 fills them behind the identical contract.
@@ -134,6 +143,33 @@ def main(argv=None) -> int:
     #    survivors -> manifest). Only Roboflow rows carry a bbox; every other
     #    family stays a full-image row with blank crop fields, no copy made.
     rows = assemble_rows(survivors, class_cfg, roots=roots)
+    ordered = sorted(survivors, key=lambda r: (r.source, r.relpath))
+
+    # 5b. CONDITIONAL EVALUATION — INGEST-06 strict >30 rule on the usable
+    #     (post-dedup) counts: a conditional class joins the manifest only
+    #     when its count is STRICTLY greater than min_class_flag (exactly 30
+    #     is excluded); zero-usable classes are excluded with their reason
+    #     recorded in the audit, never silently omitted. Failed classes'
+    #     rows leave the manifest here (both aligned lists filtered by the
+    #     same indices) and the decision renders in the audit.
+    min_class_flag = int(params.get("min_class_flag", 30))
+    conditional_names = sorted((class_cfg.get("conditional_classes") or {}))
+    cond_counter = Counter(row["canonical_class"] for row in rows)
+    conditional_decision = evaluate_conditional(
+        {name: cond_counter.get(name, 0) for name in conditional_names},
+        min_class_flag,
+    )
+    dropped_conditional = {
+        name for name, d in conditional_decision.items() if not d["included"]
+    }
+    if dropped_conditional:
+        keep_idx = [
+            i for i, row in enumerate(rows)
+            if row["canonical_class"] not in dropped_conditional
+        ]
+        rows = [rows[i] for i in keep_idx]
+        ordered = [ordered[i] for i in keep_idx]
+
     crops_rel = str(paths_cfg["outputs"]["crops_dir"]).replace("\\", "/").rstrip("/")
     pad_frac = float(params.get("pad_frac", 0.15))
     crop_stats = {
@@ -143,7 +179,6 @@ def main(argv=None) -> int:
         "failed": 0,
         "dry_run": bool(args.dry_run),
     }
-    ordered = sorted(survivors, key=lambda r: (r.source, r.relpath))
     for row, rec in zip(rows, ordered):
         if rec.family != "roboflow-yolo" or rec.bbox is None:
             crop_stats["non_roboflow"] += 1
@@ -168,16 +203,52 @@ def main(argv=None) -> int:
         row.update(res)
         row["crop_path"] = f"{crops_rel}/{res['crop_path']}" if crops_rel else res["crop_path"]
         crop_stats["written"] += 1
+    # 6. SPLIT — guarded stratified 80/20 assigned ONLY after dedup and the
+    #    conditional evaluation (RESEARCH.md diagram box 6). The min-class
+    #    guard pre-empts sklearn's two cryptic stratify failure modes with a
+    #    readable per-class message + the collect-more contingency; no
+    #    source's own split0 is ever consulted.
+    test_size = float(params.get("test_size", 0.2))
+    random_state = int(params.get("random_state", 42))
+    min_class_split = int(params.get("min_class_split", 10))
+    split_counts = assign_split(rows, test_size, random_state, min_class_split)
+
+    # 7. LEAK CHECK — cross-split phash pairs must be zero (the phase's
+    #    success criterion, provable by construction: dedup merged every
+    #    pair within the threshold BEFORE the split existed).
+    leaks = leak_check(rows, threshold)
+    if leaks != 0:
+        raise SystemExit(
+            f"[leak-check] cross-split phash pairs at Hamming <= {threshold}: "
+            f"{leaks} — dedup invariant broken; refusing to write the manifest"
+        )
+
+    # 8. WRITE ARTIFACTS (full run): manifest.csv; crops were written by the
+    #    crop stage above. --dry-run writes NOTHING.
     if not args.dry_run:
         write_manifest(rows, base / paths_cfg["outputs"]["manifest"])
 
-    # 6. AUDIT — console summary in one print call.
+    # 9. AUDIT — console summary + the full report surfaced twice (INGEST-07):
+    #    printed here AND written to reports/dedup_audit.md from the SAME
+    #    string, so console and file can never diverge. No timestamps
+    #    anywhere — byte-identical re-runs are the determinism contract.
     print(
         build_console_summary(
             source_rows, records, survivors, removed,
             stem_removed=stem_removed, crop_stats=crop_stats,
+            conditional_decision=conditional_decision,
         )
     )
+    report = build_audit_report(
+        source_rows, records, survivors, removed, stem_removed,
+        rows, params, class_cfg, conditional_decision,
+        split_counts, leaks, crop_stats=crop_stats,
+    )
+    print(report)
+    if not args.dry_run:
+        report_path = base / paths_cfg["outputs"]["audit_report"]
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(report, encoding="utf-8", newline="\n")
     if args.dry_run:
         print("[dry-run] writes disabled — pipeline ran in memory only")
     return 0

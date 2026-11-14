@@ -6,3 +6,5 @@ __pycache__/
 data/processed/crops/
 .det.sha256
 .det.git
+models/
+*.pt

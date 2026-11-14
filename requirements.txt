@@ -14,5 +14,15 @@ pytest==9.2.0
 # parameter block records the installed versions alongside imagehash's.
 Pillow==13.0.0
 scipy==1.18.1
-# Phase 1 installs NO torch/ultralytics/opencv-python/Roboflow SDK/xgboost/streamlit
-# (heavy stack is Phase 2+ per RESEARCH.md Explicitly-NOT table)
+# Phase 1 installed NO torch/ultralytics/opencv-python/Roboflow SDK/xgboost/streamlit
+# (heavy stack is Phase 2+ per RESEARCH.md Explicitly-NOT table) — that historical
+# note is SUPERSEDED by the Phase 2 section below, which adds the CPU-torch pose
+# feature stack (torch/torchvision/ultralytics/opencv-python).
+
+# --- Phase 2: pose feature seam (CPU torch per locked Phase 2 CONTEXT decision) ---
+# torch/torchvision must come from the CPU wheel index, NOT default PyPI resolution:
+#   pip install torch==2.15.0 torchvision==0.29.2 --index-url https://download.pytorch.org/whl/cpu/
+torch==2.15.0              # CPU wheel via the index above; device-agnostic code, cpu frozen for the build
+torchvision==0.29.2        # pairs with torch 2.15.0 (requires torch>=2.14.0); ultralytics dependency
+ultralytics==8.4.212       # latest at Phase 2 planning (2026-11-14); exact pin per header policy
+opencv-python==4.14.0.94   # explicit 4.x pin: ultralytics' >=4.7.0 constraint alone would resolve 5.0.0.93

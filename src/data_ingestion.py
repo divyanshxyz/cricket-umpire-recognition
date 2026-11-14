@@ -94,6 +94,13 @@ def main(argv=None) -> int:
         help="cap files parsed per source after sorting (development/sample runs only)",
     )
     args = ap.parse_args(argv)
+    if args.limit is not None and args.limit < 0:
+        # IN-05: recs[:n] with a negative n slices from the END — a silently
+        # biased sample run, exactly what a dev/sample cap exists to control.
+        ap.error(
+            f"--limit must be >= 0 (got {args.limit}) — a negative cap would "
+            "slice from the end and silently bias the sample run"
+        )
 
     config_path = Path(args.config)
     base = config_path.resolve().parent.parent  # configs/paths.yaml -> repo root

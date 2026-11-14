@@ -54,7 +54,12 @@ from src.ingestion.audit import (
 )
 from src.ingestion.canonical import UnknownLabelError, load_class_map, map_label
 from src.ingestion.crops import crop_row
-from src.ingestion.dedup import cluster_by_phash, phash_file, stem_groups
+from src.ingestion.dedup import (
+    cluster_by_phash,
+    phash_file,
+    stem_group_label_disagreements,
+    stem_groups,
+)
 from src.ingestion.discover import discover_sources
 from src.ingestion.manifest import (
     assemble_rows,
@@ -159,6 +164,10 @@ def main(argv=None) -> int:
     }
     pool = [r for r in records if r.outcome in ("keep", "conditional")]
     stem_survivors, stem_removed = stem_groups(pool)
+    # IN-10: count stem groups whose copies disagree on raw_label — Layer A
+    # resolves by sort order with no conflict flag, so the audit counts the
+    # silence explicitly instead of under-reporting intra-frame disagreement.
+    stem_disagreements = stem_group_label_disagreements(pool)
     for rec in tqdm(stem_survivors, desc="phash", unit="img", disable=None):
         img_path = base / roots[rec.source] / rec.relpath
         try:
@@ -291,6 +300,7 @@ def main(argv=None) -> int:
         build_console_summary(
             source_rows, records, survivors, removed,
             stem_removed=stem_removed, crop_stats=crop_stats,
+            stem_disagreements=stem_disagreements,
             conditional_decision=conditional_decision,
         )
     )
@@ -298,6 +308,7 @@ def main(argv=None) -> int:
         source_rows, records, survivors, removed, stem_removed,
         rows, params, class_cfg, conditional_decision,
         split_counts, leaks, crop_stats=crop_stats,
+        stem_disagreements=stem_disagreements,
     )
     print(report)
     if not args.dry_run:

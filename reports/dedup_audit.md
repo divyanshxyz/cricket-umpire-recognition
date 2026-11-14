@@ -41,6 +41,7 @@ Duplicates removed - Roboflow stem-groups: 1939
   roboflow_umpire_wide: 1939 (file-level: 2497 files from 558 stems)
   umpire_gestures: 0 (file-level: 145 files from 145 stems)
   reconciliation: 1937 pooled copies removed by Layer A + 2 zero-box copies excluded as no_box before dedup (counted above) = 1939 file-level
+Stem groups whose copies disagreed on raw_label: 298 (Layer A resolves by sort order — no conflict flag, unlike Layer B; not part of the conflict count below)
 Duplicates removed - phash near-duplicates: 1719
   archive: 390
   archive1: 136

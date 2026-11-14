@@ -72,6 +72,27 @@ def stem_groups(records):
     return survivors, removed
 
 
+def stem_group_label_disagreements(records) -> int:
+    """Count Layer A stem groups whose members' raw labels disagree (IN-10).
+
+    Layer A keeps the lexicographically first copy per stripped stem and
+    discards the rest WITHOUT label resolution — unlike Layer B, where
+    :func:`resolve_cluster_labels` flags intra-cluster disagreement on the
+    survivor. Copies of one source frame can carry different annotation
+    classes (different augmentations), so without this count a disagreement
+    is silently resolved by sort order and the audit's conflict count
+    (Layer B only) under-reports intra-frame disagreement. Same grouping as
+    :func:`stem_groups` — pass the same pool the CLI gave it.
+    """
+    labels: dict[tuple[str, str], set] = {}
+    for rec in records:
+        if rec.family == "roboflow-yolo":
+            labels.setdefault(
+                (rec.source, roboflow_stem(rec.relpath)), set()
+            ).add(rec.raw_label)
+    return sum(1 for group_labels in labels.values() if len(group_labels) > 1)
+
+
 def resolve_cluster_labels(cluster_records):
     """Cluster-level label resolution (locked CONTEXT policy).
 

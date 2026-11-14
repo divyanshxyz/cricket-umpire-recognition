@@ -95,7 +95,8 @@ def no_box_only_stems(roboflow_records) -> int:
 
 def build_console_summary(source_rows, records, survivors, removed,
                           stem_removed=None, crop_stats=None,
-                          conditional_decision=None) -> str:
+                          conditional_decision=None,
+                          stem_disagreements=None) -> str:
     """Build the console audit text (returned as one string; the CLI prints it).
 
     Sections: per-source [ok]/[warn] lines (parsed count vs on-disk census +
@@ -181,6 +182,14 @@ def build_console_summary(source_rows, records, survivors, removed,
                 )
     for src in sorted(stem_by_source):
         lines.append(f"  {src}: {stem_by_source[src]}")
+    if stem_disagreements is not None:
+        # IN-10: Layer A resolves intra-stem label disagreement by sort
+        # order with no conflict flag — count it so the silence is at least
+        # visible (the conflict count below covers Layer B only).
+        lines.append(
+            f"  stem groups whose copies disagreed on raw_label (resolved by "
+            f"sort order — Layer A has no conflict resolution): {stem_disagreements}"
+        )
     lines.append(
         f"Duplicates removed — Layer B phash (Hamming <= threshold, inclusive): {len(removed)}"
     )
@@ -268,7 +277,8 @@ def build_console_summary(source_rows, records, survivors, removed,
 
 def build_audit_report(source_rows, records, survivors, removed, stem_removed,
                        rows, params, class_cfg, conditional_decision,
-                       split_counts, leaks, crop_stats=None) -> str:
+                       split_counts, leaks, crop_stats=None,
+                       stem_disagreements=None) -> str:
     """Build the full audit report (reports/dedup_audit.md content).
 
     INGEST-07 presentation resolution: the CLI surfaces this report TWICE —
@@ -443,6 +453,16 @@ def build_audit_report(source_rows, records, survivors, removed, stem_removed,
                 f"vs pooled {pooled_stem} + no_box {no_box_roboflow} "
                 f"(delta {delta - no_box_roboflow}) — investigate before Phase 2"
             )
+    if stem_disagreements is not None:
+        # IN-10: Layer A resolves intra-stem label disagreement by sort
+        # order with no conflict flag (unlike Layer B's resolve_cluster_
+        # labels) — count it so the silence is at least visible. These are
+        # NOT part of the conflict lines below (Layer B only).
+        lines.append(
+            f"Stem groups whose copies disagreed on raw_label: {stem_disagreements} "
+            "(Layer A resolves by sort order — no conflict flag, unlike Layer B; "
+            "not part of the conflict count below)"
+        )
     lines.append(f"Duplicates removed - phash near-duplicates: {len(removed)}")
     removed_by_source = Counter(r.source for r in removed)
     for src in sorted(removed_by_source):

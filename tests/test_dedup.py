@@ -21,6 +21,7 @@ from src.ingestion.dedup import (
     cluster_by_phash,
     resolve_cluster_labels,
     roboflow_stem,
+    stem_group_label_disagreements,
     stem_groups,
 )
 
@@ -145,6 +146,27 @@ def test_stem_groups_pass_non_roboflow_through():
     assert len(survivors) == 2
     assert len(removed) == 1
     assert plain in survivors
+
+
+def test_stem_group_label_disagreements_counts_mixed_label_groups():
+    # IN-10: Layer A keeps the first copy per stripped stem and discards the
+    # rest WITHOUT label resolution — the helper counts groups whose members
+    # carried different raw labels so the audit surfaces the silence.
+    def rf(relpath, label):
+        return rec(relpath, priority=3, family="roboflow-yolo", source="rf",
+                   raw_label=label)
+
+    agreeing = [
+        rf(f"train/images/frame_0001_jpg.rf.{'a' * 32}.jpg", "four"),
+        rf(f"test/images/frame_0001_jpg.rf.{'b' * 32}.jpg", "four"),
+    ]
+    disagreeing = [
+        rf(f"train/images/frame_0002_jpg.rf.{'c' * 32}.jpg", "four"),
+        rf(f"test/images/frame_0002_jpg.rf.{'d' * 32}.jpg", "wide"),
+    ]
+    plain = rec("x.jpg", family="filename-label", raw_label="out")
+    assert stem_group_label_disagreements(agreeing + [plain]) == 0
+    assert stem_group_label_disagreements(agreeing + disagreeing + [plain]) == 1
 
 
 # --- Cluster-level conflict resolution ---------------------------------------------

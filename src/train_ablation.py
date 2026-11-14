@@ -414,7 +414,10 @@ def run_train_stage(npz_path, selected) -> dict:
     "produced_artifacts"} — the last carries the file names actually
     written by THIS run (shared encoder + each selected model's registry
     artifact), which the report's sha256 provenance is restricted to
-    (WR-03: stale leftovers from earlier runs render no line)."""
+    (WR-03: stale leftovers from earlier runs render no line). Each
+    produced artifact's sha256 is also recorded in its model's meta as
+    ``artifact_sha256`` (WR-04: the eval-stage reload integrity-gates
+    against exactly the bytes this run wrote)."""
     seed_everything(SEED)
     digest = test_slice_digest(npz_path)
     manifest_path = REPO_ROOT / str(_paths_cfg()["outputs"]["manifest"])
@@ -474,6 +477,13 @@ def run_train_stage(npz_path, selected) -> dict:
         artifact_name = spec.get("artifact")
         if artifact_name is not None and (models_dir / artifact_name).exists():
             produced_artifacts.append(artifact_name)
+            # WR-04: record the artifact's sha256 in the same-run meta so
+            # the eval-stage reload integrity-gates against exactly the
+            # bytes this run wrote (the report param block records the
+            # same digest — the Phase 4 reload recipe verifies against it).
+            meta_by_model[model_id]["artifact_sha256"] = sha256_of(
+                models_dir / artifact_name
+            )
             print(
                 f"[ablation] wrote models/{artifact_name} "
                 f"(Model {model_id} trained)"

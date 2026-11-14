@@ -33,6 +33,11 @@ Locked contracts (03-CONTEXT.md / 03-RESEARCH.md):
   test-slice tobytes in sequence (RESEARCH Pattern 5) — recorded at
   training start and asserted unchanged before any metric write
   (CONTEXT-locked frozen-test guard, T-03-01).
+- sha256_of / verify_artifact_sha256: the WR-04 load-time integrity gate
+  shared by baseline_ann.py and ensemble.py — a pickle-deserializing
+  artifact load (torch.load weights_only=False / joblib.load) verifies
+  the file's sha256 against the producing run's recorded digest BEFORE
+  deserialization (refuse-on-mismatch, never an unverified unpickle).
 
 This module is torch-free at module level (torch may be imported only
 inside function bodies, mirroring the build_features lazy-import
@@ -425,6 +430,54 @@ def test_slice_digest(npz_path) -> str:
         for key in DIGEST_KEY_ORDER:
             digest.update(z[key][te].tobytes())
     return digest.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Artifact integrity (WR-04: bind pickle-deserializing loads to provenance)
+# ---------------------------------------------------------------------------
+
+
+def sha256_of(path) -> str:
+    """sha256 hex digest of a file's bytes (streamed 1 MiB chunks). The
+    same digest the runner records in the report param block — the shared
+    provenance vocabulary for every artifact integrity check."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_artifact_sha256(path, expected_sha256, artifact_name="artifact") -> str:
+    """Load-time integrity gate for the pickle-deserializing artifact loads
+    (torch.load(weights_only=False) and joblib.load execute arbitrary
+    embedded code at load time): recompute the file's sha256 and refuse
+    ANY mismatch BEFORE deserialization — a corrupted, swapped, or stale
+    file under models/ must never reach the unpickler (fail-closed, the
+    same posture as the test-slice digest guard).
+
+    ``expected_sha256`` is the value the producing run recorded (the
+    runner stores sha256_of(artifact) in the train-stage meta and the
+    report param block renders the same digest). A None expectation skips
+    the check and returns the recomputed digest — a bare interactive
+    reload stays usable; the runner always passes the hash it recorded in
+    the same run, and the documented Phase 4 reload recipe verifies before
+    every load.
+
+    Returns the verified sha256 hex digest."""
+    path = Path(path)
+    actual = sha256_of(path)
+    if expected_sha256 is None:
+        return actual
+    if actual != str(expected_sha256).lower():
+        raise ValueError(
+            f"verify_artifact_sha256: {artifact_name} integrity check "
+            f"FAILED — expected sha256 {expected_sha256}, observed "
+            f"{actual} — refusing to deserialize a corrupted, swapped, or "
+            "stale artifact (fail-closed, test-slice-digest posture; a "
+            "pickle deserializer must never see unverified bytes)"
+        )
+    return actual
 
 
 def seed_everything(seed: int = 42) -> None:

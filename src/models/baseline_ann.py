@@ -386,14 +386,25 @@ def save_baseline_checkpoint(path, model, scaler, le, meta, code_version: str) -
     )
 
 
-def load_baseline_checkpoint(path) -> dict:
+def load_baseline_checkpoint(path, expected_sha256=None) -> dict:
     """Load baseline_ann.pt.
 
     MUST pass weights_only=False: torch 2.15 defaults to the safe loader
     (weights_only=True) which REJECTS the pickled sklearn MinMaxScaler
     bundled inside the checkpoint (verified Pitfall 1 — UnpicklingError).
-    This is our own trusted, locally-produced artifact."""
-    return torch.load(Path(path), weights_only=False)
+    weights_only=False executes arbitrary embedded code at load time, so
+    the bytes are INTEGRITY-BOUND first (WR-04): when ``expected_sha256``
+    is provided, the file's sha256 is verified against it BEFORE the load
+    and any mismatch refuses fail-closed. The documented Phase 4 reload
+    recipe is ``load_baseline_checkpoint(path, expected_sha256=<the
+    baseline_ann sha256 recorded in reports/ablation_study.md's param
+    block>)``. A None expectation skips the check (bare interactive
+    reload); the runner passes the sha256 it recorded in the same run."""
+    path = Path(path)
+    data_mod.verify_artifact_sha256(
+        path, expected_sha256, artifact_name="models/baseline_ann.pt"
+    )
+    return torch.load(path, weights_only=False)
 
 
 def train_model_a(X_train_raw, y_int, le, models_dir, code_version: str) -> dict:
@@ -414,10 +425,16 @@ def eval_model_a(arrays, test_idx, le, models_dir, meta=None) -> np.ndarray:
     with the TRAIN-FIT scaler (transform-only — never a refit,
     TRAIN-03/boundary), return fp32 softmax probas (columns in shared
     encoder int order). The test slice is loaded exactly once per run by
-    the guarded eval stage and only sliced here. ``meta`` is accepted for
-    dispatch uniformity (Plan 03-02 threads the train-stage meta to every
-    evaluator; A reloads everything from disk and ignores it)."""
-    ckpt = load_baseline_checkpoint(Path(models_dir) / "baseline_ann.pt")
+    the guarded eval stage and only sliced here. ``meta`` may carry
+    ``artifact_sha256`` (the runner records sha256_of(baseline_ann.pt) at
+    train time, WR-04) — when present, the reload is integrity-gated
+    against it BEFORE torch.load; absent, the bare reload stays usable
+    (interactive path)."""
+    meta = meta or {}
+    ckpt = load_baseline_checkpoint(
+        Path(models_dir) / "baseline_ann.pt",
+        expected_sha256=meta.get("artifact_sha256"),
+    )
     scaler = ckpt["scaler"]
     model = MiliBaseline(n_classes=len(ckpt["classes"]))
     model.load_state_dict(ckpt["state_dict"])

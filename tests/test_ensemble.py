@@ -27,6 +27,12 @@ synthetic data only — no npz, no real training runs. Pinned contracts:
   members == ['model_c', 'xgboost', 'random_forest'], and
   rebuild_model_c(state, hyperparams) forward-passes (2, 59) -> (2, 6)
   in eval mode WITHOUT any training code (self-contained bundle, A4).
+- Bundle load integrity gate (WR-04): load_ensemble_bundle verifies the
+  file's sha256 against the caller-provided expected value BEFORE
+  joblib.load — a wrong expectation raises the integrity ValueError
+  (never an unpickler error), a matching expectation loads, None skips
+  the check; eval_model_d threads the meta-carried artifact_sha256 into
+  the same gate.
 """
 
 import numpy as np
@@ -34,7 +40,7 @@ import pytest
 import torch
 from sklearn.ensemble import RandomForestClassifier
 
-from src.models.data import canonical_classes, fit_label_encoder
+from src.models.data import canonical_classes, fit_label_encoder, sha256_of
 
 LE = fit_label_encoder(canonical_classes())
 
@@ -45,6 +51,7 @@ from src.models.ensemble import (  # noqa: E402
     AugmentingXGBClassifier,
     RF_GRID,
     XGB_GRID,
+    eval_model_d,
     rebuild_model_c,
     save_ensemble_bundle,
     load_ensemble_bundle,
@@ -336,3 +343,82 @@ def test_tune_grids_returns_fitted_members_and_grid_meta():
     # refit=True semantics: the returned members are the grid winners.
     assert xgb_best.get_params()["max_depth"] == grid_meta["xgb_best_params"]["max_depth"]
     assert rf_best.get_params()["n_estimators"] == grid_meta["rf_best_params"]["n_estimators"]
+
+
+# ---------------------------------------------------------------------------
+# Test 7 (WR-04): bundle load integrity gate — sha256-bound joblib.load
+# ---------------------------------------------------------------------------
+
+
+def _tiny_bundle(path):
+    """One real ensemble_model.joblib: tiny deterministic members + a
+    seeded Model C state (the exact save contract the runner uses)."""
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(24, 59)).astype(np.float32)
+    y = np.arange(24) % 6
+    xgb_clf = AugmentingXGBClassifier(
+        n_estimators=5, max_depth=2, random_state=42, n_jobs=1,
+        tree_method="hist", eval_metric="mlogloss", verbosity=0,
+    )
+    xgb_clf.fit(X, y)
+    rf_clf = AugmentingRandomForestClassifier(n_estimators=5, random_state=42, n_jobs=1)
+    rf_clf.fit(X, y)
+    torch.manual_seed(0)
+    model_c = ResidualMLP_for_bundle()
+    state = {k: v.detach().cpu().clone() for k, v in model_c.state_dict().items()}
+    hyper = {"input_dim": 59, "hidden_dim": 16, "num_blocks": 2, "dropout": 0.1,
+             "n_classes": 6}
+    save_ensemble_bundle(path, xgb_clf, rf_clf, state, hyper, LE)
+
+
+def test_load_ensemble_bundle_with_wrong_sha256_refuses_before_deserialization(tmp_path):
+    # joblib.load executes arbitrary embedded code — the WR-04 gate
+    # verifies the file's sha256 BEFORE deserialization: a non-joblib
+    # garbage file with a wrong expectation raises the integrity ValueError
+    # (never the unpickler's own error), so unverified bytes never load.
+    garbage = tmp_path / "ensemble_model.joblib"
+    garbage.write_bytes(b"definitely-not-a-joblib-bundle")
+    with pytest.raises(ValueError, match="integrity check FAILED"):
+        load_ensemble_bundle(garbage, expected_sha256="0" * 64)
+
+
+def test_load_ensemble_bundle_with_matching_sha256_roundtrips(tmp_path):
+    # The documented Phase 4 recipe: verify against the recorded sha256
+    # (reports/ablation_study.md param block) before the load.
+    path = tmp_path / "ensemble_model.joblib"
+    _tiny_bundle(path)
+    bundle = load_ensemble_bundle(path, expected_sha256=sha256_of(path))
+    assert bundle["members"] == ["model_c", "xgboost", "random_forest"]
+
+
+def test_load_ensemble_bundle_with_none_expectation_skips_the_gate(tmp_path):
+    path = tmp_path / "ensemble_model.joblib"
+    _tiny_bundle(path)
+    bundle = load_ensemble_bundle(path, expected_sha256=None)
+    assert bundle["voting"] == "soft"
+
+
+def test_eval_model_d_threads_meta_sha_into_the_gate(tmp_path):
+    # End-to-end WR-04 wiring: the runner records the bundle's sha256 in
+    # the train-stage meta; the eval entry integrity-gates the reload
+    # against exactly that digest before joblib.load.
+    path = tmp_path / "ensemble_model.joblib"
+    _tiny_bundle(path)
+    rng = np.random.default_rng(7)
+    arrays = {"features_eng": rng.normal(size=(6, 59)).astype(np.float32)}
+    test_idx = np.array([3, 4, 5])
+    proba = eval_model_d(
+        arrays, test_idx, LE, tmp_path,
+        meta={"artifact_sha256": sha256_of(path)},
+    )
+    assert proba.shape == (3, 6)
+    assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-5)
+    # A stale/swapped bundle sha trips the gate inside the eval entry.
+    with pytest.raises(ValueError, match="integrity check FAILED"):
+        eval_model_d(
+            arrays, test_idx, LE, tmp_path,
+            meta={"artifact_sha256": "e" * 64},
+        )
+    # No meta -> bare reload stays usable (interactive path).
+    proba2 = eval_model_d(arrays, test_idx, LE, tmp_path, meta=None)
+    assert proba2.shape == (3, 6)

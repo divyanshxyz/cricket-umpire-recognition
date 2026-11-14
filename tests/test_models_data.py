@@ -24,7 +24,9 @@ from src.models.data import (
     canonical_classes,
     fit_label_encoder,
     load_features_npz,
+    sha256_of,
     split_masks,
+    verify_artifact_sha256,
 )
 from src.models.data import test_slice_digest as compute_test_slice_digest
 
@@ -295,3 +297,44 @@ def test_real_frozen_npz_contract_and_leak_free():
         is_label = loaded["labels"] == label
         assert (is_label & (loaded["split"] == "train")).any(), label
         assert (is_label & (loaded["split"] == "test")).any(), label
+
+
+# ---------------------------------------------------------------------------
+# Artifact integrity helpers (WR-04: bind pickle loads to provenance)
+# ---------------------------------------------------------------------------
+
+
+def test_sha256_of_matches_hashlib_file_digest(tmp_path):
+    import hashlib
+
+    payload = b"artifact-bytes-for-the-integrity-helper"
+    path = tmp_path / "artifact.bin"
+    path.write_bytes(payload)
+    assert sha256_of(path) == hashlib.sha256(payload).hexdigest()
+    assert re.fullmatch(r"[0-9a-f]{64}", sha256_of(path))
+    # The digest is a pure function of the bytes — same file, same digest.
+    assert sha256_of(path) == sha256_of(path)
+
+
+def test_verify_artifact_sha256_accepts_match_case_insensitive_and_none(tmp_path):
+    path = tmp_path / "artifact.bin"
+    path.write_bytes(b"stable-bytes")
+    digest = sha256_of(path)
+    # Matching expectation -> verified digest returned (load may proceed).
+    assert verify_artifact_sha256(path, digest, artifact_name="x.bin") == digest
+    # Uppercase hex from a caller is normalized (case-insensitive compare).
+    assert verify_artifact_sha256(path, digest.upper()) == digest
+    # None expectation -> check skipped, recomputed digest returned (the
+    # bare interactive reload stays usable; the runner always passes the
+    # sha256 it recorded in the same run).
+    assert verify_artifact_sha256(path, None) == digest
+
+
+def test_verify_artifact_sha256_refuses_mismatch_naming_both_values(tmp_path):
+    # A corrupted, swapped, or stale artifact must never reach the
+    # unpickler: the mismatch raises ValueError naming the expected and
+    # observed digests (fail-closed, test-slice-digest posture).
+    path = tmp_path / "artifact.bin"
+    path.write_bytes(b"corrupted-or-swapped-bytes")
+    with pytest.raises(ValueError, match="integrity check FAILED"):
+        verify_artifact_sha256(path, "0" * 64, artifact_name="models/x.bin")

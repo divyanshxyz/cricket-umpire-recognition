@@ -392,10 +392,23 @@ def save_ensemble_bundle(path, xgb_best, rf_best, model_c_state,
     joblib.dump(bundle, path)
 
 
-def load_ensemble_bundle(path) -> dict:
+def load_ensemble_bundle(path, expected_sha256=None) -> dict:
     """joblib.load the ensemble bundle (the Phase 4 load recipe — no
-    training code needed on the load side)."""
-    return joblib.load(Path(path))
+    training code needed on the load side).
+
+    joblib.load executes arbitrary embedded code at load time, so the
+    bytes are INTEGRITY-BOUND first (WR-04): when ``expected_sha256`` is
+    provided, the file's sha256 is verified against it BEFORE the load
+    and any mismatch refuses fail-closed. The documented Phase 4 reload
+    recipe is ``load_ensemble_bundle(path, expected_sha256=<the
+    ensemble_model sha256 recorded in reports/ablation_study.md's param
+    block>)``. A None expectation skips the check (bare interactive
+    reload); the runner passes the sha256 it recorded in the same run."""
+    path = Path(path)
+    data_mod.verify_artifact_sha256(
+        path, expected_sha256, artifact_name="models/ensemble_model.joblib"
+    )
+    return joblib.load(path)
 
 
 def rebuild_model_c(state_dict, hyperparams) -> ResidualMLP:
@@ -501,10 +514,16 @@ def eval_model_d(arrays, test_idx, le, models_dir, meta=None) -> np.ndarray:
     from disk (proving the save/load contract end-to-end), rebuild Model
     C from model_c_state + model_c_hyperparams, compute the three member
     proba matrices on the IDENTICAL held-out test slice, and soft-vote
-    them (alignment asserted, rows summing to 1). ``meta`` is accepted for
-    dispatch uniformity and unused (D reloads everything from the
-    bundle)."""
-    bundle = load_ensemble_bundle(Path(models_dir) / "ensemble_model.joblib")
+    them (alignment asserted, rows summing to 1). ``meta`` may carry
+    ``artifact_sha256`` (the runner records sha256_of(ensemble_model.joblib)
+    at train time, WR-04) — when present, the bundle reload is
+    integrity-gated against it BEFORE joblib.load; absent, the bare
+    reload stays usable (interactive path)."""
+    meta = meta or {}
+    bundle = load_ensemble_bundle(
+        Path(models_dir) / "ensemble_model.joblib",
+        expected_sha256=meta.get("artifact_sha256"),
+    )
     missing = [k for k in BUNDLE_KEYS if k not in bundle]
     if missing:
         raise ValueError(

@@ -1,0 +1,8 @@
+.planning/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/processed/crops/
+.det.sha256
+.det.git

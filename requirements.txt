@@ -1,0 +1,14 @@
+# Phase 1 pinned environment (Python 3.12 venv; created via: py -3.12 -m venv .venv)
+# Pins per RESEARCH.md Installation block; CLAUDE.md requires exact pins.
+ImageHash==4.3.2
+numpy<2.3
+pandas==2.2.*
+PyYAML==6.0.*
+scikit-learn==1.9.1
+tqdm
+pytest
+# Pillow and scipy arrive as ImageHash dependencies; left to pip resolution per RESEARCH.md
+Pillow
+scipy
+# Phase 1 installs NO torch/ultralytics/opencv-python/Roboflow SDK/xgboost/streamlit
+# (heavy stack is Phase 2+ per RESEARCH.md Explicitly-NOT table)

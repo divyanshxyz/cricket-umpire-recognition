@@ -1,0 +1,32 @@
+# Canonical class map for the cricket umpire signal dataset (Phase 1).
+# Raw vocabulary verified on disk 2026-11-14 from: data.yaml files, filename
+# prefixes, and folder names (RESEARCH.md Verified Dataset Census).
+# Consumed by src/ingestion/canonical.py via yaml.safe_load.
+
+canonical_classes: [Four, Six, Out, Wide, NoBall, NoAction]
+
+mapping:
+  Four:     ["four", "4", "boundary"]
+  Six:      ["six", "sixes", "6", "sixer"]
+  Out:      ["out", "hand out", "wicket", "dismissal"]
+  Wide:     ["wide", "wideball", "wides"]
+  NoBall:   ["no_ball", "noball", "nobal", "no-ball"]
+  NoAction: ["no_action", "no action", "none", "normal", "idle"]
+
+# Conditional classes — included only when the usable (post-dedup) count is
+# STRICTLY greater than 30 (REQUIREMENTS.md INGEST-06 wording "only if >30";
+# exactly 30 is excluded). Evaluated by the audit at full-run time (Plan 03).
+conditional_classes:
+  LegBye:   ["legbye", "legbyes", "leg bye"]
+  DeadBall: ["deadball", "dead ball"]
+
+exclude_as_class:      # counted in the audit, never in manifest class rows
+  DRS:        "different problem class (trajectory physics)"
+  umpire:     "non-signal label"
+  non_umpire: "non-signal label"
+
+# Research-driven crop rule: the annotated boxes carry the SIGNAL class (the
+# umpire performing it), so the operative rule (Plan 02) is the largest-area
+# annotated box of ANY class. The single umpire-class row is logged explicitly
+# in the audit.
+crop_source_ok: ["umpire"]

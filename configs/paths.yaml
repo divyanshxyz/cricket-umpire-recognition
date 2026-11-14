@@ -1,0 +1,49 @@
+# Dataset roots, output paths, and locked tunables for the Phase 1 ingestion pipeline.
+# Roots are READ-ONLY raw data under datasets/ (never written or moved);
+# all pipeline writes go to the paths under outputs.
+
+dataset_roots:
+  roboflow_umpire_wide:
+    root: datasets/roboflow_umpire_wide
+    family: roboflow-yolo
+    priority: 3
+  umpire_gestures:
+    root: datasets/Umpire_Gestures.v1i.yolov8
+    family: roboflow-yolo
+    priority: 3
+  archive:
+    root: datasets/archive
+    family: filename-label
+    priority: 1
+  archive3:
+    root: datasets/archive3
+    family: filename-label
+    priority: 1
+  archive1:
+    root: datasets/archive1
+    family: folder-label
+    priority: 2
+  inception:
+    root: datasets/Inception_test_train_split
+    family: filename-label
+    priority: 1
+
+# Listed in the audit, excluded from the image pipeline
+# (pre-computed pose-feature table from a prior iteration).
+audit_only:
+  umpire_pose_dataset.csv:
+    path: datasets/umpire_pose_dataset.csv
+    family: precomputed-csv
+
+outputs:
+  manifest: data/processed/manifest.csv
+  crops_dir: data/processed/crops
+  audit_report: reports/dedup_audit.md
+
+params:
+  phash_threshold: 8     # near-duplicate Hamming distance <= 8 on the 64-bit phash (inclusive)
+  pad_frac: 0.15         # bbox crop context padding, clamped to image bounds
+  test_size: 0.2         # stratified 80/20 split (Plan 03, assigned AFTER dedup)
+  random_state: 42       # split seed
+  min_class_flag: 30     # audit flags any canonical class below this (collect-more contingency)
+  min_class_split: 10    # stratified split guard (Plan 03)

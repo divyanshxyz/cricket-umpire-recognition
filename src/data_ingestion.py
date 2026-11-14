@@ -64,8 +64,11 @@ from src.ingestion.manifest import (
     write_manifest,
 )
 
-# Family -> parser dispatch. roboflow-yolo and folder-label are seam stubs
-# returning [] until Plan 02 fills them behind the identical contract.
+# Family -> parser dispatch. All three families are full implementations:
+# filename-label since the walking skeleton, roboflow-yolo and folder-label
+# since commit d83fded. precomputed-csv is the only family intentionally
+# absent — audit-only sources are listed by discovery but never enter the
+# image pipeline.
 PARSERS = {
     "roboflow-yolo": parse_roboflow,
     "folder-label": parse_folder_label,

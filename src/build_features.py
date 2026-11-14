@@ -92,8 +92,6 @@ STATS_KEYS = (
 # in requirements.txt, installed versions live here).
 VERSION_PACKAGES = ("torch", "torchvision", "ultralytics", "opencv-python", "numpy")
 
-FEATURE_KEYS = ("features_raw", "features_eng", "labels", "split", "row_ids")
-
 
 def sha256_of(path) -> str:
     """sha256 hex digest of a file (provenance recording, V6-adjacent

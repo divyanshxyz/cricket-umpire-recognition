@@ -62,8 +62,8 @@ matplotlib version: 3.11.2
 features.npz sha256: 42b9c5cc714e3c22005b9c612390a05075f9a7df801678269bb0453d5b6473cd
 manifest sha256: eca8579b4adf794af2bf4d211a598f42f20a933b5049c26268112da2169ef67a
 test-slice digest: c75427be36a02e59fe1d1a92abeded39107a7935cb6db851fea37618c735efa8
-baseline_ann sha256: b4058adff1e22211935061d5dda1a03fb1ae6385e3d9d4c68cc3f4d4685a82a3 (models/baseline_ann.pt)
-pose_mlp sha256: 3ec38a0fbabdb4d018bd5f092fc334e5124321750f7caf72443571095685e80b (models/pose_mlp.pt)
+baseline_ann sha256: 5f1a595ede3b94e5ae04d4b8561aa67d7079b6b80d68ea8db05ce00d8114d5ae (models/baseline_ann.pt)
+pose_mlp sha256: 6a1c4e7e35e2efbe83865bbe62a6ace89242275b4bb4c0a193fd2df990442962 (models/pose_mlp.pt)
 ensemble_model sha256: 12c84a36bc574ce62da96bc6b09aa864c97bfdbc596169eaa1ece070b155562f (models/ensemble_model.joblib)
 label_encoder sha256: b439eff2f6effdcdf056481243d1b9bd448d97b2a1eb9d16bedccce2b7fa8a0f (models/label_encoder.joblib)
 Model A meta: fold_best_epochs [78, 43, 48, 60, 36]; final_epochs 53; batch_size 32
@@ -88,4 +88,4 @@ Model D grid protocol: GridSearchCV(scoring=f1_macro, cv=StratifiedKFold(5, shuf
 Model D grid (XGBoost member): best params {'learning_rate': 0.1, 'max_depth': 3, 'n_estimators': 300}; best cv f1_macro 0.8362
 Model D grid (RandomForest member): best params {'max_depth': None, 'n_estimators': 200}; best cv f1_macro 0.7978
 Model D model C source: Model C trained in the same run (weights ride the train-stage meta and are stored inside the bundle)
-code version: phase3-plan01-r3
+code version: phase3-plan01-r4

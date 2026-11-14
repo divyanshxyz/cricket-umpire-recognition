@@ -139,7 +139,11 @@ def select_umpire(boxes_xyxy, box_conf, img_w, img_h):
     Score = (bbox_area / image_area) x (1 - 2*|cx_norm - 0.5|), both terms in
     [0, 1], computed in float64 with NO rounding anywhere; max wins. The
     exact-equality tie set is resolved by maximum detection confidence
-    (order-independent). Returns (person_index, None) or (None,
+    (order-independent); a full confidence tie INSIDE that set resolves
+    lexicographically by box coordinates (x0, y0, x1, y1) — selection is
+    fully order-independent under detection-order permutation (WR-01: a
+    bare argmax over the tied subset would silently pick the first index
+    and follow detection order). Returns (person_index, None) or (None,
     ExtractionFailure("no_person", ...)).
 
     Multi-person scenes are first-class: exactly one index comes back
@@ -164,7 +168,20 @@ def select_umpire(boxes_xyxy, box_conf, img_w, img_h):
     best = int(np.argmax(scores))
     ties = np.flatnonzero(scores == scores[best])  # exact float comparison
     if len(ties) > 1:
-        best = int(ties[int(np.argmax(confs[ties]))])
+        # Tie-break 1: maximum detection confidence.
+        tied = ties[confs[ties] == confs[ties].max()]
+        if len(tied) > 1:
+            # Tie-break 2 (WR-01): full score AND confidence tie —
+            # lexicographic by box coords (x0 primary; np.lexsort's LAST
+            # key is primary). Deterministic under any detection-order
+            # permutation; boxes with identical coords are the same
+            # detection, so the order is total over distinct boxes.
+            order = np.lexsort(
+                (boxes[tied, 3], boxes[tied, 2], boxes[tied, 1], boxes[tied, 0])
+            )
+            best = int(tied[order[0]])
+        else:
+            best = int(tied[0])
     return best, None
 
 

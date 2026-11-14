@@ -50,6 +50,39 @@ def test_exact_tie_resolves_by_higher_conf_order_independently():
     assert boxes_a[best_a][2] == boxes_b[best_b][2] == 75.0  # b1's x1
 
 
+def test_full_tie_resolves_lexicographically_order_independently():
+    # WR-01 regression: when composite scores AND detection confidences
+    # BOTH tie exactly, the old argmax-over-ties silently picked the FIRST
+    # tied index — permuting detection order selected a different umpire.
+    # The tertiary tie-break is lexicographic by box coords (x0, y0, x1,
+    # y1): the SAME box wins under any permutation (only the index follows
+    # the permutation). b_left (cx=25) and b_right (cx=75) on a 100x100
+    # image have equal area frac (0.09) and equal centrality (0.5) — an
+    # exact float score tie — and equal confidences.
+    b_left = (10.0, 20.0, 40.0, 50.0)
+    b_right = (60.0, 20.0, 90.0, 50.0)
+    boxes_a = np.array([b_right, b_left])
+    boxes_b = np.array([b_left, b_right])
+    confs = np.array([0.7, 0.7])
+    best_a, failure_a = select_umpire(boxes_a, confs, 100, 100)
+    best_b, failure_b = select_umpire(boxes_b, confs, 100, 100)
+    assert failure_a is None and failure_b is None
+    assert boxes_a[best_a][0] == boxes_b[best_b][0] == 10.0  # same box wins
+    assert best_a == 1 and best_b == 0  # index tracks the permutation
+
+
+def test_higher_conf_still_beats_lexicographic_order():
+    # The tertiary tie-break only fires on a full score AND conf tie: with
+    # distinct confidences the higher-confidence box still wins even when
+    # it is lexicographically larger.
+    b_left = (10.0, 20.0, 40.0, 50.0)
+    b_right = (60.0, 20.0, 90.0, 50.0)
+    boxes = np.array([b_left, b_right])
+    best, failure = select_umpire(boxes, np.array([0.2, 0.9]), 100, 100)
+    assert failure is None
+    assert best == 1  # higher confidence b_right, not the lex-smaller b_left
+
+
 def test_empty_boxes_typed_no_person():
     best, failure = select_umpire(np.zeros((0, 4)), np.zeros((0,)), 100, 100)
     assert best is None

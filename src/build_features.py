@@ -67,8 +67,13 @@ from src.pose_features import (
 # manifest roster over the Plan 01 seam (extract -> raw51 + eng59), npz
 # contract features_raw/features_eng/labels/split/row_ids +
 # failed_row_ids/failure_reasons, counts + parameter block in
-# reports/features_build.md.
-CODE_VERSION = "phase2-plan01-r1"
+# reports/features_build.md. r2: review-fix pass — the counts report
+# renders the full manifest split census with zero-OK red flags (IN-03),
+# write_features_npz is fail-closed on the frozen widths (CR-02), the
+# model warm-up is eager in main() (WR-02), and the path guard is
+# contained (CR-01). Extraction math unchanged — the frozen 415-ok
+# artifact stays valid.
+CODE_VERSION = "phase2-plan01-r2"
 
 # The closed failure-reason set (CONTEXT never-raises decision): every way a
 # manifest row can fail this build, counted explicitly. The extractor's typed
@@ -264,15 +269,19 @@ def extract_rows(manifest: pd.DataFrame, base: Path, extract_fn) -> tuple:
 
 
 def build_counts_section(total, stats, per_class_ok, per_split_ok,
-                         class_census) -> list:
+                         class_census, split_census) -> list:
     """Pure counts section for reports/features_build.md.
 
     Renders total/ok/failed-by-reason, the fail-closed ok + failed == total
     reconciliation line, the unit-scale fallback count (Plan 01's
     scale_warning_events observable where the build runs), per-class and
-    per-split OK counts, and a loud per-class zero-OK red flag when a
-    canonical class dropped to 0 OK rows (would starve Phase 3 — e.g. Four,
-    the scarce class)."""
+    per-split OK counts over the FULL manifest census, and loud zero-OK red
+    flags for BOTH classes and splits. IN-03: per-split rendering iterates
+    the manifest split census (not the OK counter), so a split whose every
+    row failed extraction stays visible at 0 with its own red flag — it
+    used to vanish from the report entirely while a starved class got the
+    loud per-class flag (either starvation cripples Phase 3). Deterministic
+    from the manifest + stats, so byte-identical re-runs hold."""
     ok = stats["ok"]
     failed = total - ok
     lines: list = []
@@ -293,10 +302,13 @@ def build_counts_section(total, stats, per_class_ok, per_split_ok,
         lines.append(f"  {label}: {per_class_ok.get(label, 0)}")
     lines.append("")
     lines.append("Per-split OK counts:")
-    for split in sorted(per_split_ok):
-        lines.append(f"  {split}: {per_split_ok[split]}")
+    for split in sorted(split_census):
+        lines.append(f"  {split}: {per_split_ok.get(split, 0)}")
     zero_ok = sorted(
         label for label, count in class_census.items() if per_class_ok.get(label, 0) == 0
+    )
+    zero_ok_splits = sorted(
+        split for split in split_census if per_split_ok.get(split, 0) == 0
     )
     lines.append("")
     if zero_ok:
@@ -306,6 +318,13 @@ def build_counts_section(total, stats, per_class_ok, per_split_ok,
         )
     else:
         lines.append("Per-class zero-OK red flags: none")
+    if zero_ok_splits:
+        lines.append(
+            "RED FLAG — splits with 0 OK rows (Phase 3 evaluation would be "
+            f"starved for these): {', '.join(zero_ok_splits)}"
+        )
+    else:
+        lines.append("Per-split zero-OK red flags: none")
     return lines
 
 
@@ -361,6 +380,7 @@ def main(argv=None) -> int:
     manifest = pd.read_csv(manifest_path, keep_default_na=False)
     total = len(manifest)
     class_census = Counter(manifest["canonical_class"])
+    split_census = Counter(manifest["split"])
 
     if args.dry_run:
         # Weights-free self-check of the whole input contract: census +
@@ -421,7 +441,9 @@ def main(argv=None) -> int:
     )
     lines.append("")
     lines.extend(
-        build_counts_section(total, stats, per_class_ok, per_split_ok, class_census)
+        build_counts_section(
+            total, stats, per_class_ok, per_split_ok, class_census, split_census
+        )
     )
     lines.append("")
     weights_path = base / str(pose_cfg["weights_path"])

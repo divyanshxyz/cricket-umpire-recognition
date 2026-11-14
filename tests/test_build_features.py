@@ -201,7 +201,7 @@ def test_param_block_required_keys_and_timestamp_free():
         "numpy version: 0.0.0-test",
         "weights sha256: " + "a" * 64,
         "manifest sha256: " + "b" * 64,
-        "code version: phase2-plan01-r1",
+        "code version: phase2-plan01-r2",
     ):
         assert expected in text, f"missing param-block line: {expected}"
     # Determinism contract: NO rendered line matches a wall-clock date.
@@ -213,8 +213,11 @@ def test_counts_section_reconciliation_and_zero_ok_red_flag():
     stats.update({"ok": 3, "no_person": 1})
     class_census = {"Four": 1, "Six": 2, "Wide": 1}
     per_class_ok = {"Six": 2, "Wide": 1}
+    split_census = {"train": 3, "test": 1}
     per_split_ok = {"train": 2, "test": 1}
-    lines = build_counts_section(4, stats, per_class_ok, per_split_ok, class_census)
+    lines = build_counts_section(
+        4, stats, per_class_ok, per_split_ok, class_census, split_census
+    )
     text = "\n".join(lines)
     assert "total manifest rows: 4" in text
     assert "ok: 3" in text and "failed: 1" in text
@@ -222,14 +225,47 @@ def test_counts_section_reconciliation_and_zero_ok_red_flag():
     assert "reconciliation: ok + failed == total (3 + 1 == 4)" in text
     assert "  Four: 0" in text  # scarce class dropped to zero OK rows
     assert "RED FLAG" in text and "Four" in text
+    # IN-03: per-split counts render over the FULL manifest split census,
+    # and a healthy split census carries the explicit 'none' line.
+    assert "  train: 2" in text and "  test: 1" in text
+    assert "Per-split zero-OK red flags: none" in text
 
-    # All classes OK -> the explicit 'none' line instead of a red flag.
-    stats_all = {key: 0 for key in STATS_KEYS}
-    stats_all["ok"] = 4
-    lines_ok = build_counts_section(
-        4, stats_all, {"Four": 1, "Six": 2, "Wide": 1}, per_split_ok, class_census
+
+def test_counts_section_zero_ok_split_stays_visible_with_red_flag():
+    # IN-03 regression: if EVERY test-split row failed extraction, the
+    # split used to vanish from the report entirely (rendered from the OK
+    # counter) while the per-class equivalent emitted a loud RED FLAG.
+    # The split census keeps it visible at 0 with its own red flag —
+    # deterministic from the manifest + stats, so byte-identical re-runs
+    # still hold.
+    stats = {key: 0 for key in STATS_KEYS}
+    stats.update({"ok": 2, "no_person": 1, "decode_error": 1})
+    lines = build_counts_section(
+        4,
+        stats,
+        {"Six": 2},
+        {"train": 2},
+        {"Six": 4},
+        {"train": 3, "test": 1},
     )
-    assert "Per-class zero-OK red flags: none" in "\n".join(lines_ok)
+    text = "\n".join(lines)
+    assert "  test: 0" in text  # the starved split STAYS VISIBLE
+    assert "  train: 2" in text
+    assert "RED FLAG — splits with 0 OK rows" in text
+    assert "test" in [line for line in lines if "splits with 0 OK rows" in line][0]
+
+    # All splits OK -> the explicit 'none' line instead of a red flag.
+    lines_ok = build_counts_section(
+        4,
+        {key: 0 for key in STATS_KEYS} | {"ok": 4},
+        {"Six": 4},
+        {"train": 3, "test": 1},
+        {"Six": 4},
+        {"train": 3, "test": 1},
+    )
+    text_ok = "\n".join(lines_ok)
+    assert "Per-split zero-OK red flags: none" in text_ok
+    assert "Per-class zero-OK red flags: none" in text_ok
     assert not any("RED FLAG" in line for line in lines_ok)
 
 

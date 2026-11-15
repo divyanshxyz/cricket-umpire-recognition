@@ -347,6 +347,107 @@ def engineered_features(kpts_masked, scale, mask_conf: float = 0.20):
     return np.concatenate([normalized.reshape(-1), geometry]).astype(np.float32)
 
 
+def engineer_extended_features(
+    features_raw: np.ndarray,
+    features_eng: np.ndarray,
+    mask_conf: float = 0.20,
+) -> np.ndarray:
+    """Computes 22 relational pose features proven in Spike 001a and concatenates
+    them onto features_eng to yield an (N, 81) or (81,) float32 array (FUSE-01).
+
+    Features (indices 59:81):
+      59: Wrist-to-wrist distance (Euclidean norm)
+      60: Wrist-to-wrist horizontal dx (r_wrist.x - l_wrist.x)
+      61: Wrist-to-wrist vertical dy (r_wrist.y - l_wrist.y)
+      62: Left wrist-to-nose vertical elevation (nose.y - l_wrist.y)
+      63: Right wrist-to-nose vertical elevation (nose.y - r_wrist.y)
+      64: Max wrist-to-nose elevation (max(dy_l, dy_r))
+      65: Min wrist-to-nose elevation (min(dy_l, dy_r))
+      66: Abs diff of wrist-to-nose elevation (|dy_l - dy_r|)
+      67: Left wrist-to-hip normalized distance
+      68: Right wrist-to-hip normalized distance
+      69: Left wrist-to-left shoulder distance (same side)
+      70: Right wrist-to-right shoulder distance (same side)
+      71: Left wrist-to-right shoulder distance (cross)
+      72: Right wrist-to-left shoulder distance (cross)
+      73: Left elbow-to-shoulder dx (l_el.x - l_sh.x)
+      74: Left elbow-to-shoulder dy elevation (l_sh.y - l_el.y)
+      75: Right elbow-to-shoulder dx (r_el.x - r_sh.x)
+      76: Right elbow-to-shoulder dy elevation (r_sh.y - r_el.y)
+      77: Upper-body bounding box span_x (width)
+      78: Upper-body bounding box span_y (height)
+      79: Upper-body bounding box aspect ratio (span_x / (span_y + 1e-6))
+      80: Mean arm keypoint confidence (COCO 5..10)
+    """
+    f_eng = np.asarray(features_eng, dtype=np.float32)
+    is_1d = (f_eng.ndim == 1)
+    if is_1d:
+        f_eng = f_eng[None, :]
+
+    N = f_eng.shape[0]
+    kpts = f_eng[:, :51].reshape(N, 17, 3)
+
+    # 1. Wrist-to-wrist (59:62)
+    ww_dist = np.linalg.norm(kpts[:, R_WRIST, :2] - kpts[:, L_WRIST, :2], axis=1, keepdims=True)
+    ww_dx = (kpts[:, R_WRIST, 0] - kpts[:, L_WRIST, 0])[:, None]
+    ww_dy = (kpts[:, R_WRIST, 1] - kpts[:, L_WRIST, 1])[:, None]
+
+    # 2. Wrist-to-nose vertical elevation dy (62:67)
+    wn_dy_l = (kpts[:, NOSE, 1] - kpts[:, L_WRIST, 1])[:, None]
+    wn_dy_r = (kpts[:, NOSE, 1] - kpts[:, R_WRIST, 1])[:, None]
+    wn_dy_max = np.maximum(wn_dy_l, wn_dy_r)
+    wn_dy_min = np.minimum(wn_dy_l, wn_dy_r)
+    wn_dy_diff = np.abs(wn_dy_l - wn_dy_r)
+
+    # 3. Wrist-to-hip normalized distances (67:69)
+    wh_dist_l = np.linalg.norm(kpts[:, L_WRIST, :2] - kpts[:, L_HIP, :2], axis=1, keepdims=True)
+    wh_dist_r = np.linalg.norm(kpts[:, R_WRIST, :2] - kpts[:, R_HIP, :2], axis=1, keepdims=True)
+
+    # 4. Wrist-to-shoulder distances (same side and cross-shoulder) (69:73)
+    ws_same_l = np.linalg.norm(kpts[:, L_WRIST, :2] - kpts[:, L_SHOULDER, :2], axis=1, keepdims=True)
+    ws_same_r = np.linalg.norm(kpts[:, R_WRIST, :2] - kpts[:, R_SHOULDER, :2], axis=1, keepdims=True)
+    ws_cross_l = np.linalg.norm(kpts[:, L_WRIST, :2] - kpts[:, R_SHOULDER, :2], axis=1, keepdims=True)
+    ws_cross_r = np.linalg.norm(kpts[:, R_WRIST, :2] - kpts[:, L_SHOULDER, :2], axis=1, keepdims=True)
+
+    # 5. Elbow-to-shoulder dx and dy elevations (73:77)
+    es_dx_l = (kpts[:, L_ELBOW, 0] - kpts[:, L_SHOULDER, 0])[:, None]
+    es_dy_l = (kpts[:, L_SHOULDER, 1] - kpts[:, L_ELBOW, 1])[:, None]
+    es_dx_r = (kpts[:, R_ELBOW, 0] - kpts[:, R_SHOULDER, 0])[:, None]
+    es_dy_r = (kpts[:, R_SHOULDER, 1] - kpts[:, R_ELBOW, 1])[:, None]
+
+    # 6. Upper body bounding box span_x, span_y, aspect ratio (77:80)
+    span_x = np.zeros((N, 1), dtype=np.float32)
+    span_y = np.zeros((N, 1), dtype=np.float32)
+    for i in range(N):
+        vis = kpts[i, :13, 2] >= mask_conf
+        if vis.any():
+            xs = kpts[i, :13, 0][vis]
+            ys = kpts[i, :13, 1][vis]
+            span_x[i] = xs.max() - xs.min()
+            span_y[i] = ys.max() - ys.min()
+    aspect = span_x / (span_y + 1e-6)
+
+    # 7. Mean upper-body arm keypoint confidence (index 80)
+    arm_conf = np.mean(kpts[:, 5:11, 2], axis=1, keepdims=True)
+
+    relational = np.hstack([
+        ww_dist, ww_dx, ww_dy,
+        wn_dy_l, wn_dy_r, wn_dy_max, wn_dy_min, wn_dy_diff,
+        wh_dist_l, wh_dist_r,
+        ws_same_l, ws_same_r, ws_cross_l, ws_cross_r,
+        es_dx_l, es_dy_l, es_dx_r, es_dy_r,
+        span_x, span_y, aspect,
+        arm_conf,
+    ]).astype(np.float32)
+
+    extended = np.hstack([f_eng, relational])
+    extended = np.nan_to_num(extended, nan=0.0, posinf=0.0, neginf=0.0)
+
+    if is_1d:
+        return extended[0]
+    return extended
+
+
 def velocity_features(prev_xy, cur_xy, scale):
     """Frame-to-frame velocity (8,) float32: (cur - prev) for VELOCITY_JOINTS
     (COCO 7,8,9,10 — L/R elbow, L/R wrist) divided by the CURRENT frame's

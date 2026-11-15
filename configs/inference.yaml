@@ -7,7 +7,7 @@
 # validate every key fail-closed.
 
 params:
-  model: image               # P2RDY-02 / FUSE-04 switch — image | temporal | multimodal are valid (fail-closed enum)
+  model: multimodal           # P2RDY-02 / FUSE-04 switch — image | temporal | multimodal are valid (fail-closed enum)
   device: cpu                # locked CONTEXT decision; code stays device-agnostic (Phase 2 precedent)
   stride: 2                  # VIDEO-01 literal: process every 2nd frame; skipped frames pass through unannotated
   window: 12                 # VIDEO-02 rolling-window deque maxlen

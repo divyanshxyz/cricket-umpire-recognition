@@ -501,6 +501,7 @@ class UmpireVideoAnalyzer:
         fps = cap.get(cv2.CAP_PROP_FPS)  # RAW value; 0.0 -> typed stabilizer fallback
         self._fps_reported = float(fps)
         writer = None
+        frames_written = 0
         if output_path is not None:
             writer_fps = fps if fps > 0 else float(self.cfg["fps_fallback"])
             writer = cv2.VideoWriter(
@@ -512,6 +513,20 @@ class UmpireVideoAnalyzer:
                     int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
                 ),
             )
+            if not writer.isOpened():
+                # WR-01: OpenCV fails to open an unwritable path, a missing
+                # parent directory, or an unsupported extension — and for a
+                # bad extension it leaves a ZERO-BYTE stub behind while
+                # write() keeps "succeeding" silently. Fail closed symmetric
+                # with the input guard above, and never leave the stub.
+                writer.release()
+                Path(output_path).unlink(missing_ok=True)
+                raise ValueError(
+                    f"analyze_stream: cannot open annotated-video output "
+                    f"{output_path} (mp4v fourcc) — the path is unwritable "
+                    "or has an unsupported extension (fail-closed, never a "
+                    "silent missing output)"
+                )
         try:
             # WR-02: warm up ONCE before the loop — a missing/corrupt pose
             # weights path fails fast as one config error, never as N
@@ -593,6 +608,7 @@ class UmpireVideoAnalyzer:
                 # else: skipped frame passes through UNANNOTATED (A7)
                 if writer is not None:
                     writer.write(ann)
+                    frames_written += 1
                 yield FrameRecord(frame_idx, ann, new_events)
                 frame_idx += 1
             if self._frames_read == 0:
@@ -609,6 +625,14 @@ class UmpireVideoAnalyzer:
             cap.release()
             if writer is not None:
                 writer.release()
+                if frames_written == 0:
+                    # WR-01: a run that failed before writing ANY frame (the
+                    # 0-frame ValueError, a warm_up() raise, or any abort
+                    # before the first write) must not leave an empty output
+                    # artifact — unlink the stub on the way out. A successful
+                    # run always writes >= 1 frame (the 0-frame guard above),
+                    # so this only ever fires on a failure path.
+                    Path(output_path).unlink(missing_ok=True)
 
     def analyze(self, video_path, output_path=None) -> VideoAnalysisResult:
         """Consume analyze_stream and aggregate the frozen result (events in

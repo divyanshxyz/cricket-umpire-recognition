@@ -159,6 +159,35 @@ def test_output_video_preserves_frame_count(real_image_fixture_video, tmp_path):
     assert written == 60
 
 
+def test_output_bad_directory_fails_closed_no_stub(tmp_path):
+    """WR-01: an --output path whose parent directory does not exist makes
+    cv2.VideoWriter fail to open — the run fails closed with a ValueError
+    naming the path (the input-side guard's symmetric output-side twin,
+    typed "analyze_stream: cannot open annotated-video output") and leaves
+    NO stub file or empty output artifact behind."""
+    video = _write_zeros_video(tmp_path / "zeros.mp4")
+    bad_out = tmp_path / "no_such_dir" / "annotated.mp4"
+    with pytest.raises(ValueError) as exc:
+        UmpireVideoAnalyzer().analyze(str(video), output_path=str(bad_out))
+    assert "cannot open annotated-video output" in str(exc.value)
+    assert "annotated.mp4" in str(exc.value)
+    assert not bad_out.exists()
+
+
+def test_output_bad_extension_fails_closed_no_stub(tmp_path):
+    """WR-01: an unsupported extension (.txt) makes cv2.VideoWriter leave a
+    ZERO-BYTE stub file behind while write() keeps silently succeeding —
+    the isOpened() guard must raise naming the path AND the stub must be
+    unlinked, so a failed run never leaves an empty output artifact."""
+    video = _write_zeros_video(tmp_path / "zeros.mp4")
+    stub = tmp_path / "annotated.txt"
+    with pytest.raises(ValueError) as exc:
+        UmpireVideoAnalyzer().analyze(str(video), output_path=str(stub))
+    assert "cannot open annotated-video output" in str(exc.value)
+    assert "annotated.txt" in str(exc.value)
+    assert not stub.exists()
+
+
 def test_missing_file_fails_closed(tmp_path):
     """VIDEO-01/empty: a missing file raises ValueError containing the path
     text — never a silent empty output."""

@@ -705,3 +705,21 @@ class UmpireVideoAnalyzer:
             probs_vector=probs,
             raw51=np.asarray(raw),
         )
+
+    def annotate_image(self, image) -> np.ndarray:
+        """Phase 5 Tab 1 annotated-render seam (UI-SPEC Decision 10, ADDITIVE
+        — zero changes to existing logic): the public single-image surface
+        that returns the ANNOTATED frame, mirroring the per-frame compose in
+        analyze_stream (extract -> _annotate). Failure posture mirrors
+        classify_image's [input]-class message shape: a no-person extraction
+        raises ValueError naming the function, the input, and the typed
+        failure reason — fail-closed, never a silent unannotated frame."""
+        raw, payload = self.extractor.extract(image)
+        if raw is None:
+            raise ValueError(
+                f"annotate_image: extraction failed for {image} "
+                f"({payload.reason}: {payload.detail}) — a single-image "
+                "annotation without a detectable umpire is an error, not a "
+                "silent default (fail-closed, no silent default)"
+            )
+        return self._annotate(image, raw)

@@ -294,3 +294,36 @@ def test_cpu_smoke_end_to_end(real_image_fixture_video, capsys):
     assert ri.main(["--video", fixture]) == 0
     second = capsys.readouterr().out
     assert first == second, "summaries must be byte-identical across re-runs"
+
+
+@pytest.mark.skipif(
+    not (_WEIGHTS_OK and FIXTURE_IMAGE.exists()),
+    reason="phase weights / untracked fixture image not present (fresh clone posture)",
+)
+def test_temporal_summary_renders_untrained_marker(
+    real_image_fixture_video, tmp_path, capsys
+):
+    """Plan 04-03 (P2RDY-02): the Plan 04-02 `model == "temporal"` summary
+    branch becomes reachable — main(["--video", fixture, "--config",
+    temporal_yaml]) exits 0 and the rendered summary contains the UNTRAINED
+    smoke-marker line (the marker constant imported from src.scoreboard —
+    the single source — rendered verbatim) and the no-validation-video-tuning
+    provenance line. Two runs produce byte-identical summaries (determinism
+    contract: seeded stub, timestamp-free rendering)."""
+    cfg_path = tmp_path / "inference_temporal.yaml"
+    cfg_path.write_text("params:\n  model: temporal\n", encoding="utf-8")
+    fixture = str(real_image_fixture_video)
+
+    assert ri.main(["--video", fixture, "--config", str(cfg_path)]) == 0
+    first = capsys.readouterr().out
+
+    from src.scoreboard import UNTRAINED_SMOKE_MARKER
+
+    assert UNTRAINED_SMOKE_MARKER == "UNTRAINED — smoke only"
+    assert UNTRAINED_SMOKE_MARKER in first, "summary must render the UNTRAINED line"
+    assert "model_mode: temporal" in first
+    assert "no validation-video tuning performed" in first
+
+    assert ri.main(["--video", fixture, "--config", str(cfg_path)]) == 0
+    second = capsys.readouterr().out
+    assert first == second, "temporal summaries must be byte-identical across re-runs"

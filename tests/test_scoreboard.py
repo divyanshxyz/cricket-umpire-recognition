@@ -27,6 +27,7 @@ from src.scoreboard import (
     EVENT_CSV_COLUMNS,
     EventLogEntry,
     LAW_TABLE,
+    UNTRAINED_SMOKE_MARKER,
     ScoreState,
     apply_event,
 )
@@ -154,3 +155,31 @@ def test_event_log_entry_rejects_wrong_score_length():
     # extras_after) — a wrong-length tuple would corrupt the CSV contract.
     with pytest.raises(ValueError, match="4-tuple"):
         EventLogEntry("00:01", "Four", 0.9, (1, 2, 3))
+
+
+def test_untrained_smoke_marker_field_contract():
+    # T-04-07 transparency record (Plan 04-03): EventLogEntry gains the
+    # smoke_marker field defaulting to "" WITHOUT disturbing the 7-column
+    # CSV contract — positional construction still works, to_row() stays
+    # exactly 7 fields under EVENT_CSV_COLUMNS (the marker is a
+    # display/transparency field, NEVER a CSV column), and the module
+    # constant equals the pinned UNTRAINED string. The source-level AST
+    # import guard (test_scoreboard_import_guard_pure_module) pins that the
+    # new constant adds no imports.
+    entry = EventLogEntry("00:12", "Four", 0.8123, (4, 0, "0.1", 0))
+    assert entry.smoke_marker == ""
+    row = entry.to_row()
+    assert len(row) == 7
+    assert row == ("00:12", "Four", 0.8123, 4, 0, "0.1", 0)
+    assert UNTRAINED_SMOKE_MARKER == "UNTRAINED — smoke only"
+    # An explicitly stamped entry still renders a 7-field row.
+    marked = EventLogEntry(
+        "00:14",
+        "Six",
+        0.9,
+        (10, 0, "0.2", 0),
+        smoke_marker=UNTRAINED_SMOKE_MARKER,
+    )
+    assert marked.smoke_marker == "UNTRAINED — smoke only"
+    assert len(marked.to_row()) == len(EVENT_CSV_COLUMNS)
+    assert marked.to_row() == ("00:14", "Six", 0.9, 10, 0, "0.2", 0)

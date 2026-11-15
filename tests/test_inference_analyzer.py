@@ -225,3 +225,141 @@ def test_max_frames_typed_abort(tmp_path):
     assert "max_frames" in aborts[0]
     assert result.frames_read == 5
     assert result.failures.get("max_frames_abort") == 1
+
+
+# ---------------------------------------------------------------------------
+# Temporal adapter (Plan 04-03, P2RDY-02): model: temporal runs the SAME
+# extract -> probs -> stabilizer -> scoreboard pipeline through the SEEDED
+# untrained TwoHeadAttentionBiGRU stub — explicitly labeled UNTRAINED.
+# ---------------------------------------------------------------------------
+
+
+def _override_config(tmp_path, **overrides):
+    """tmp inference yaml overriding INFERENCE_DEFAULTS keys through the
+    load_inference_config merge posture (the max_frames test precedent):
+    every value stays inside the loader's validated domain."""
+    lines = ["params:"]
+    for key, value in overrides.items():
+        lines.append(f"  {key}: {value}")
+    cfg_path = tmp_path / "inference_override.yaml"
+    cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return cfg_path
+
+
+@_requires_fixture_image
+def test_temporal_mode_determinism_double_run(real_image_fixture_video, tmp_path):
+    """P2RDY-02 determinism contract (RESEARCH Pitfall 5): two fresh
+    temporal-mode analyzers over the same real-image fixture produce
+    IDENTICAL (timestamp, signal, confidence@8dp, score) event lists —
+    torch.manual_seed(42) immediately before TwoHeadAttentionBiGRU()
+    construction pins the untrained stub's random init; a differing second
+    run is a determinism-contract failure. Every emitted temporal
+    EventLogEntry carries the UNTRAINED smoke marker."""
+    cfg = _override_config(tmp_path, model="temporal")
+    result = UmpireVideoAnalyzer(config_path=cfg).analyze(
+        str(real_image_fixture_video)
+    )
+    second = UmpireVideoAnalyzer(config_path=cfg).analyze(
+        str(real_image_fixture_video)
+    )
+    assert result.model_mode == "temporal"
+    assert second.model_mode == "temporal"
+    assert _event_tuples(result) == _event_tuples(second)
+    for event in result.events:
+        assert event.smoke_marker == "UNTRAINED — smoke only"
+
+
+@_requires_fixture_image
+def test_temporal_mode_guaranteed_fire_stamps_untrained_marker(
+    real_image_fixture_video, tmp_path
+):
+    """T-04-07 mitigation pinned NON-vacuously: threshold 0.01 is inside the
+    validated (0, 1] domain, and the untrained stub's softmax max over
+    non-NoAction classes is >= 1/6 > 0.01, so the fire gate qualifies on the
+    first strided frame and at least one EventLogEntry is GUARANTEED to
+    fire — every fired entry carries smoke_marker == "UNTRAINED — smoke
+    only" and a non-NoAction gated signal. Test-fixture config only — the
+    shipped configs/inference.yaml keeps the locked 0.75 literal (no
+    validation-video tuning)."""
+    cfg = _override_config(tmp_path, model="temporal", threshold="0.01")
+    result = UmpireVideoAnalyzer(config_path=cfg).analyze(
+        str(real_image_fixture_video)
+    )
+    assert result.model_mode == "temporal"
+    assert len(result.events) >= 1
+    for event in result.events:
+        assert event.smoke_marker == "UNTRAINED — smoke only"
+        assert event.signal != "NoAction"
+
+
+@_requires_fixture_image
+def test_image_mode_entries_carry_empty_smoke_marker(
+    real_image_fixture_video, tmp_path
+):
+    """The smoke_marker default stays "" in image mode (only the temporal
+    arm stamps it): threshold 0.01 guarantees >= 1 fired image-mode event so
+    the empty marker is pinned non-vacuously."""
+    cfg = _override_config(tmp_path, threshold="0.01")  # model stays "image"
+    result = UmpireVideoAnalyzer(config_path=cfg).analyze(
+        str(real_image_fixture_video)
+    )
+    assert result.model_mode == "image"
+    assert len(result.events) >= 1
+    for event in result.events:
+        assert event.smoke_marker == ""
+
+
+@_requires_fixture_image
+def test_temporal_probs_fp32_softmax_sum_one(tmp_path):
+    """P2RDY-02 precision truth: temporal probabilities are fp32 softmax —
+    a direct _temporal_probs call on a real extracted raw row returns a
+    float32 (6,) vector summing to 1.0 within 1e-5 (mean-pool over time,
+    softmax, numpy row)."""
+    cfg = _override_config(tmp_path, model="temporal")
+    analyzer = UmpireVideoAnalyzer(config_path=cfg)
+    raw, payload = analyzer.extractor.extract(str(FIXTURE_IMAGE))
+    assert raw is not None, f"fixture image extraction failed: {payload.detail}"
+    probs = analyzer._temporal_probs(raw, payload, 0)
+    assert probs.dtype == np.float32
+    assert probs.shape == (6,)
+    assert abs(float(probs.sum()) - 1.0) < 1e-5
+
+
+@_requires_fixture_image
+def test_temporal_blank_frame_splice_poisons_sequence_typed(
+    real_image_fixture_video, tmp_path
+):
+    """OQ3 + T-04-08: ONE blank (np.zeros) frame spliced mid-stream poisons
+    the assemble_sequence buffer (the frozen wholesale contract — ANY None
+    row fails the whole sequence) and the pipeline must CONTINUE: typed
+    sequence_failure analyzer events are counted (delta >= 1), the blank
+    frame's own extraction failure is a typed no_person event, zero
+    exceptions, zero mis-ordered events, and processing reaches the end
+    with frames_read == 60."""
+    image = cv2.imread(str(FIXTURE_IMAGE))
+    assert image is not None
+    spliced = tmp_path / "spliced_fixture.mp4"
+    writer = cv2.VideoWriter(
+        str(spliced),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        30.0,
+        (image.shape[1], image.shape[0]),
+    )
+    assert writer.isOpened()
+    for i in range(60):
+        writer.write(np.zeros_like(image) if i == 30 else image)
+    writer.release()
+
+    cfg = _override_config(tmp_path, model="temporal")
+    analyzer = UmpireVideoAnalyzer(config_path=cfg)
+    before = len(analyzer_events())
+    result = analyzer.analyze(str(spliced))
+    added = analyzer_events()[before:]
+    seq_failures = [line for line in added if line.startswith("sequence_failure: ")]
+    assert len(seq_failures) >= 1
+    assert result.failures.get("sequence_failure", 0) >= 1
+    assert result.failures.get("no_person") == 1
+    assert result.frames_read == 60
+    assert result.strided_frames == 30
+    stamps = [e.timestamp for e in result.events]
+    assert stamps == sorted(stamps), "event timestamps must stay monotonic"

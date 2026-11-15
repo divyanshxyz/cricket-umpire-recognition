@@ -59,12 +59,18 @@ def test_yaml_overrides_win(tmp_path):
 
 
 def test_unknown_model_value_fails_closed_naming_observed_value(tmp_path):
-    # P2RDY-02/boundary truth: only image | temporal are valid; the error
-    # names the observed value and the enum is case-sensitive.
+    # P2RDY-02/FUSE-04 boundary truth: only image | temporal | multimodal are valid;
+    # the error names the observed value and the enum is case-sensitive.
     for bad in ("video", "IMAGE"):
         p = _write_yaml(tmp_path, f"model_{bad}.yaml", f"params:\n  model: {bad}\n")
         with pytest.raises(ValueError, match=bad):
             load_inference_config(p)
+
+
+def test_multimodal_model_accepted(tmp_path):
+    p = _write_yaml(tmp_path, "model_multimodal.yaml", "params:\n  model: multimodal\n")
+    cfg = load_inference_config(p)
+    assert cfg["model"] == "multimodal"
 
 
 @pytest.mark.parametrize(

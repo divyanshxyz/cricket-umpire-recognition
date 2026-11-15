@@ -405,3 +405,55 @@ def test_temporal_blank_frame_splice_poisons_sequence_typed(
     assert result.strided_frames == 30
     stamps = [e.timestamp for e in result.events]
     assert stamps == sorted(stamps), "event timestamps must stay monotonic"
+
+
+# ---------------------------------------------------------------------------
+# Multimodal adapter (Phase 6, FUSE-04): model: multimodal runs late-fusion
+# combining 81-D extended pose geometry with 576-D MobileNetV3 visual crops.
+# ---------------------------------------------------------------------------
+
+
+@_requires_fixture_image
+def test_multimodal_classify_image(tmp_path):
+    """FUSE-04 single-image classification with model: multimodal returns
+    valid predicted class and 6-class probability distribution summing to 1."""
+    cfg = _override_config(tmp_path, model="multimodal")
+    analyzer = UmpireVideoAnalyzer(config_path=cfg)
+    result = analyzer.classify_image(str(FIXTURE_IMAGE))
+    assert result.predicted_class in {"Four", "NoAction", "NoBall", "Out", "Six", "Wide"}
+    assert len(result.probabilities) == 6
+    assert result.probs_vector.shape == (6,)
+    assert abs(float(result.probs_vector.sum()) - 1.0) < 1e-4
+    assert result.raw51.shape == (51,)
+
+
+@_requires_fixture_image
+def test_multimodal_probs_fp32_sum_one(tmp_path):
+    """FUSE-04 precision check: _multimodal_probs returns float32 (6,) summing to 1."""
+    image = cv2.imread(str(FIXTURE_IMAGE))
+    assert image is not None
+    cfg = _override_config(tmp_path, model="multimodal")
+    analyzer = UmpireVideoAnalyzer(config_path=cfg)
+    raw, payload = analyzer.extractor.extract(image)
+    assert raw is not None
+    probs = analyzer._multimodal_probs(raw, payload, image)
+    assert probs.dtype == np.float32
+    assert probs.shape == (6,)
+    assert abs(float(probs.sum()) - 1.0) < 1e-4
+
+
+@_requires_fixture_image
+def test_multimodal_stream_analysis(real_image_fixture_video, tmp_path):
+    """FUSE-04 streaming video analysis with model: multimodal processes
+    frames end-to-end, producing stabilized events with empty smoke marker."""
+    cfg = _override_config(tmp_path, model="multimodal")
+    analyzer = UmpireVideoAnalyzer(config_path=cfg)
+    result = analyzer.analyze(str(real_image_fixture_video))
+    assert result.model_mode == "multimodal"
+    assert result.frames_read == 60
+    assert result.strided_frames == 30
+    for event in result.events:
+        assert event.smoke_marker == ""
+    stamps = [e.timestamp for e in result.events]
+    assert stamps == sorted(stamps)
+

@@ -31,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # (REQUIREMENTS-literal defaults — no validation-video tuning was performed,
 # no video dataset exists per PROJECT.md Out-of-Scope).
 INFERENCE_DEFAULTS = {
-    "model": "image",            # P2RDY-02 switch — only image | temporal are valid
+    "model": "image",            # P2RDY-02 / FUSE-04 switch — image | temporal | multimodal
     "device": "cpu",             # locked CONTEXT decision; code stays device-agnostic
     "stride": 2,                 # VIDEO-01 literal
     "window": 12,                # VIDEO-02 deque maxlen
@@ -94,10 +94,10 @@ def load_inference_config(path=None) -> dict:
     cfg = {**INFERENCE_DEFAULTS, **params}
 
     model = cfg["model"]
-    if model not in ("image", "temporal"):
+    if model not in ("image", "temporal", "multimodal"):
         raise ValueError(
-            f"configs/inference.yaml: model must be exactly 'image' or "
-            f"'temporal' (P2RDY-02 switch), got {model!r} — fix the config "
+            f"configs/inference.yaml: model must be exactly 'image', "
+            f"'temporal', or 'multimodal' (P2RDY-02 / FUSE-04 switch), got {model!r} — fix the config "
             "or INFERENCE_DEFAULTS (fail-closed, no silent default)"
         )
 

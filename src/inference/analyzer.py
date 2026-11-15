@@ -207,19 +207,38 @@ class UmpireVideoAnalyzer:
             # return — reconstructed per strided frame in _temporal_probs.
             self._row_buffer = deque(maxlen=15)
 
-        # Fail-closed adapter dispatch (P2RDY-02): image and temporal are
-        # the ONLY two adapters — any other cfg["model"] value raises
-        # naming the observed value (load_inference_config already pins the
-        # same enum; this guard is the belt to its braces).
+        # Multimodal arm (FUSE-04): load VisualFeatureExtractor and
+        # MultimodalFusionClassifier bundle.
+        if self.cfg["model"] == "multimodal":
+            from src.inference.vision_extractor import VisualFeatureExtractor
+            from src.models.multimodal import MultimodalFusionClassifier
+
+            self._vision_extractor = VisualFeatureExtractor(device=self.cfg["device"])
+            fusion_rel = self._digests["multimodal_fusion"]["path"]
+            self._multimodal_model = MultimodalFusionClassifier.load(
+                REPO_ROOT / fusion_rel,
+                expected_sha256=self._digests["multimodal_fusion"]["sha256"],
+            )
+            if list(self._multimodal_model.classes_) != list(CLASS_ORDER):
+                raise ValueError(
+                    f"UmpireVideoAnalyzer: multimodal model class order {list(self._multimodal_model.classes_)} "
+                    f"does not match stabilizer CLASS_ORDER {list(CLASS_ORDER)} — fail closed"
+                )
+
+        # Fail-closed adapter dispatch (P2RDY-02 / FUSE-04): image, temporal,
+        # and multimodal are the valid adapters — any other cfg["model"] value raises
+        # naming the observed value.
         self._prob_adapters = {"image": self._image_probs}
         if self.cfg["model"] == "temporal":
             self._prob_adapters["temporal"] = self._temporal_probs
+        elif self.cfg["model"] == "multimodal":
+            self._prob_adapters["multimodal"] = self._multimodal_probs
         adapter = self._prob_adapters.get(self.cfg["model"])
         if adapter is None:
             raise ValueError(
                 f"UmpireVideoAnalyzer: model mode {self.cfg['model']!r} has "
-                f"no probability adapter wired (only image | temporal are "
-                "valid — P2RDY-02 fail-closed enum, no silent default)"
+                f"no probability adapter wired (only image | temporal | multimodal are "
+                "valid — P2RDY-02 / FUSE-04 fail-closed enum, no silent default)"
             )
         self._prob_adapter = adapter
 
@@ -409,6 +428,54 @@ class UmpireVideoAnalyzer:
         return torch.softmax(logits.mean(dim=1), dim=1)[0].numpy()
 
     # ------------------------------------------------------------------
+    # Multimodal-model adapter (FUSE-04)
+    # ------------------------------------------------------------------
+
+    def _get_umpire_bbox(self, raw51):
+        """Derive bounding box envelope (x0, y0, x1, y1) from visible keypoints
+        at mask_conf threshold for visual crop extraction."""
+        kpts = np.asarray(raw51, dtype=np.float32).reshape(17, 3)
+        mask_conf = float(self.extractor.config.get("mask_conf", 0.20))
+        vis = kpts[:, 2] > mask_conf
+        if vis.any():
+            return (
+                float(kpts[vis, 0].min()),
+                float(kpts[vis, 1].min()),
+                float(kpts[vis, 0].max()),
+                float(kpts[vis, 1].max()),
+            )
+        return None
+
+    def _multimodal_probs(self, raw, payload=None, frame=None) -> np.ndarray:
+        """One strided frame's multimodal late-fusion probability vector (FUSE-04).
+        Combines 81-D extended pose geometry with 576-D MobileNetV3 visual crop embeddings.
+        """
+        from src.pose_features import (
+            engineered_features,
+            engineer_extended_features,
+            mask_keypoints,
+            torso_scale,
+        )
+
+        mask_conf = float(self.extractor.config.get("mask_conf", 0.20))
+        if payload is None:
+            kpts = np.asarray(raw, dtype=np.float32).reshape(17, 3)
+            kpts_masked = mask_keypoints(kpts, mask_conf)
+            scale, _ = torso_scale(kpts_masked, mask_conf, "multimodal_adapter")
+            payload = engineered_features(kpts_masked, scale, mask_conf)
+
+        X_pose = engineer_extended_features(raw, payload, mask_conf=mask_conf)
+
+        if frame is not None:
+            bbox = self._get_umpire_bbox(raw)
+            X_vision = self._vision_extractor.extract_crop(frame, bbox=bbox)
+        else:
+            X_vision = np.zeros(576, dtype=np.float32)
+
+        probs = self._multimodal_model.predict_proba(X_pose, X_vision)
+        return np.asarray(probs, dtype=np.float32)
+
+    # ------------------------------------------------------------------
     # Annotation (the ONE extra predict per strided frame, A8)
     # ------------------------------------------------------------------
 
@@ -577,6 +644,8 @@ class UmpireVideoAnalyzer:
                             # through the SAME stabilizer/scoreboard path —
                             # no second pipeline.
                             probs = self._temporal_probs(raw, payload, frame_idx)
+                        elif self.cfg["model"] == "multimodal":
+                            probs = self._multimodal_probs(raw, payload, frame)
                         else:
                             probs = self._prob_adapter(raw)
                         ann = self._annotate(frame, raw)
@@ -673,18 +742,18 @@ class UmpireVideoAnalyzer:
         default. The predicted class uses numpy's first-index argmax
         tie-break (Phase 3 backstop) over the asserted LabelEncoder-sorted
         probability vector."""
-        if self.cfg["model"] != "image":
-            # Rule 2 guard (Plan 04-03): the temporal arm never loads the
+        if self.cfg["model"] not in ("image", "multimodal"):
+            # Rule 2 guard (Plan 04-03 / FUSE-04): the temporal arm never loads the
             # image model/labels, so the LabelEncoder-sorted class names a
             # single-image query needs do not exist in temporal mode — fail
             # closed naming the observed mode BEFORE any model work (no
             # latent None-subscript crash, no wasted predict).
             raise ValueError(
                 f"classify_image: single-image classification requires "
-                f"model: image — this analyzer runs model "
+                f"model: image or multimodal — this analyzer runs model "
                 f"{self.cfg['model']!r} (temporal mode classifies via the "
                 "video path; no image model/labels were loaded) — rerun "
-                "with model: image in the inference config (fail-closed, "
+                "with model: image or multimodal in the inference config (fail-closed, "
                 "no silent default)"
             )
         raw, payload = self.extractor.extract(image)
@@ -695,12 +764,25 @@ class UmpireVideoAnalyzer:
                 "query without a detectable umpire is an error, not a "
                 "silent default (fail-closed, no silent default)"
             )
-        probs = self._prob_adapter(raw)
+        if self.cfg["model"] == "multimodal":
+            if isinstance(image, (str, Path)):
+                image_bgr = cv2.imread(str(image))
+                if image_bgr is None:
+                    raise ValueError(
+                        f"classify_image: failed to decode image at {image}"
+                    )
+            else:
+                image_bgr = image
+            probs = self._multimodal_probs(raw, payload, image_bgr)
+            classes = list(self._multimodal_model.classes_)
+        else:
+            probs = self._prob_adapter(raw)
+            classes = self._image_classes
         best = int(np.argmax(probs))
         return ImageClassification(
-            predicted_class=self._image_classes[best],
+            predicted_class=classes[best],
             probabilities={
-                name: float(p) for name, p in zip(self._image_classes, probs)
+                name: float(p) for name, p in zip(classes, probs)
             },
             probs_vector=probs,
             raw51=np.asarray(raw),

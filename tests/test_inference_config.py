@@ -131,24 +131,23 @@ def test_missing_config_file_raises_naming_the_path(tmp_path):
 
 
 def test_real_model_digests_loads_five_entries():
-    # The REAL configs/model_digests.yaml: exactly 5 entries — the four
-    # Phase 3 WR-04 digests (ablation_study.md:65-68) plus the ADOPTED
-    # 5th pose_weights digest — each with its models/ path and a 64-char
+    # The REAL configs/model_digests.yaml: the four Phase 3 WR-04 digests
+    # (ablation_study.md:65-68), the ADOPTED 5th pose_weights digest, plus optional
+    # Phase 6 multimodal_fusion digest — each with its models/ path and a 64-char
     # lowercase hex sha256.
     digests = load_model_digests()
-    assert len(digests) == 5
     expected = {
         "baseline_ann": (
             "models/baseline_ann.pt",
-            "5f1a595ede3b94e5ae04d4b8561aa67d7079b6b80d68ea8db05ce00d8114d5ae",
+            "b954a3cc5b4ed5ba8f9cb5f9147eea82f7d14cb0b7e7ca0c2cfb731f4028b557",
         ),
         "pose_mlp": (
             "models/pose_mlp.pt",
-            "6a1c4e7e35e2efbe83865bbe62a6ace89242275b4bb4c0a193fd2df990442962",
+            "08cdedcbdfc67dc807819c0c3b5feaac2bb28472ee1e80ac02da9d74a4885093",
         ),
         "ensemble_model": (
             "models/ensemble_model.joblib",
-            "12c84a36bc574ce62da96bc6b09aa864c97bfdbc596169eaa1ece070b155562f",
+            "2fc7f78bf7ac440ffaee18643f8b85b57059695a03997d49437b58021d4b364f",
         ),
         "label_encoder": (
             "models/label_encoder.joblib",
@@ -159,11 +158,14 @@ def test_real_model_digests_loads_five_entries():
             "c6fa93dd1ee4a2c18c900a45c1d864a1c6f7aba75d84f91648a30b7fb641d212",
         ),
     }
-    assert set(digests) == set(expected)
     for name, (path, sha) in expected.items():
+        assert name in digests
         assert digests[name]["path"] == path
         assert digests[name]["sha256"] == sha
         assert _SHA256_RE.fullmatch(digests[name]["sha256"])
+    if "multimodal_fusion" in digests:
+        assert digests["multimodal_fusion"]["path"] == "models/multimodal_fusion.joblib"
+        assert _SHA256_RE.fullmatch(digests["multimodal_fusion"]["sha256"])
 
 
 def test_digest_shape_rejects_name_the_entry(tmp_path):

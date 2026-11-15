@@ -9,3 +9,4 @@ data/processed/crops/
 /models/
 *.pt
 data/processed/features.npz
+data/processed/vision_features_cache.npz

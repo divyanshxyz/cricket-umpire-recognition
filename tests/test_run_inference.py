@@ -93,12 +93,12 @@ def _real_digests():
 
 
 def test_dry_run_validates_and_prints_census(capsys):
-    """--dry-run against the REAL configs: exit 0, the census names all 5
-    artifact paths, and the 5 digests verify (all artifacts exist here)."""
+    """--dry-run against the REAL configs: exit 0, the census names all
+    artifact paths, and the digests verify (all artifacts exist here)."""
     assert ri.main(["--dry-run"]) == 0
     out = capsys.readouterr().out
     digests = _real_digests()
-    assert len(digests) == 5
+    assert len(digests) in (5, 6)
     for name, entry in digests.items():
         assert entry["path"] in out, f"census must name {entry['path']}"
     assert f"integrity: {len(digests)}/{len(digests)}" in out

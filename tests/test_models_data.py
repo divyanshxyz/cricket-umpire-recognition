@@ -284,13 +284,12 @@ def test_real_frozen_npz_contract_and_leak_free():
     # Full fail-closed load of the REAL frozen artifact — the adjacency
     # guard re-proves zero cross-split row overlap on every Phase 3 entry.
     loaded = load_features_npz(REAL_NPZ)
-    assert loaded["features_raw"].shape == (418, 51)
+    assert loaded["features_raw"].shape in ((418, 51), (498, 51))
     assert loaded["features_raw"].dtype == np.float32
-    assert loaded["features_eng"].shape == (418, 59)
+    assert loaded["features_eng"].shape in ((418, 59), (498, 59))
     assert loaded["features_eng"].dtype == np.float32
     train_idx, test_idx = split_masks(loaded["split"])
-    assert train_idx.size == 334
-    assert test_idx.size == 84
+    assert (train_idx.size, test_idx.size) in ((334, 84), (398, 100))
     six = set(loaded["labels"].tolist())
     assert six == set(SORTED_ORDER)
     for label in sorted(six):

@@ -109,6 +109,8 @@ def test_shell_tab3_renders_verbatim_report_without_classification_report():
     assert at.exception == []
     markdown_values = [m.value for m in at.markdown]
     assert any("Phase 3 ablation study report" in val for val in markdown_values)
+    assert any("Phase 6 Multimodal Fusion Ablation Report" in val for val in markdown_values)
+    assert any("92.00%" in val for val in markdown_values)
     assert not any("classification_report.txt" in val for val in markdown_values)
 
 

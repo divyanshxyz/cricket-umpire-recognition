@@ -41,6 +41,7 @@ SANCTIONED_IMPORTS = {
         "extract_lineage_lines",
         "format_failure_tally",
         "load_metrics_artifacts",
+        "load_multimodal_metrics_report",
         "typed_error_copy",
     },
 }

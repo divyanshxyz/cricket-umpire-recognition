@@ -66,6 +66,7 @@ PROGRESS_UNKNOWN_CAPTION = (
 # Tab 3 tracked artifact paths and missing-artifact copy (Plan 05-03, UI-04)
 METRICS_REPORT_PATH = "reports/ablation_study.md"
 METRICS_PNG_PATH = "reports/confusion_matrix.png"
+MULTIMODAL_REPORT_PATH = "reports/multimodal_ablation.md"
 MISSING_ARTIFACT_COPY = (
     "Report artifact not found — {path} is missing from disk. Restore the "
     "tracked Phase 3 artifact and reload."
@@ -356,6 +357,19 @@ def load_metrics_artifacts(
         return MISSING_ARTIFACT_COPY.format(path=METRICS_PNG_PATH)
 
     return report_path.read_text(encoding="utf-8"), png_path
+
+
+def load_multimodal_metrics_report(reports_root: Path | str) -> str | None:
+    """Load Phase 6 multimodal ablation report from disk if present (FUSE-04)."""
+    root = Path(reports_root)
+    if (root / MULTIMODAL_REPORT_PATH).is_file():
+        p = root / MULTIMODAL_REPORT_PATH
+    elif (root / Path(MULTIMODAL_REPORT_PATH).name).is_file():
+        p = root / Path(MULTIMODAL_REPORT_PATH).name
+    else:
+        return None
+    return p.read_text(encoding="utf-8")
+
 
 
 def extract_lineage_lines(report_text: str) -> list[str]:

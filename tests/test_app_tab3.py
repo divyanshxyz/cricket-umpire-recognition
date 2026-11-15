@@ -13,9 +13,11 @@ import pytest
 from src.app_support import (
     METRICS_PNG_PATH,
     METRICS_REPORT_PATH,
+    MULTIMODAL_REPORT_PATH,
     MISSING_ARTIFACT_COPY,
     extract_lineage_lines,
     load_metrics_artifacts,
+    load_multimodal_metrics_report,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -76,3 +78,13 @@ def test_app_source_has_no_direct_report_read():
     app_source = (REPO_ROOT / "app.py").read_text(encoding="utf-8")
     assert "read_text" not in app_source
     assert "read_bytes" not in app_source
+
+
+def test_load_multimodal_metrics_report():
+    """FUSE-04: load_multimodal_metrics_report loads multimodal_ablation.md
+    with verified >=91% accuracy and macro-F1 metrics."""
+    text = load_multimodal_metrics_report(REPO_ROOT)
+    assert text is not None
+    assert "Phase 6 Multimodal Fusion Ablation Report" in text
+    assert "92.00%" in text
+

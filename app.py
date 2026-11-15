@@ -35,6 +35,7 @@ from src.app_support import (
     extract_lineage_lines,
     format_failure_tally,
     load_metrics_artifacts,
+    load_multimodal_metrics_report,
     typed_error_copy,
 )
 from src.inference.analyzer import UmpireVideoAnalyzer
@@ -134,10 +135,13 @@ def render_image_tab(cfg_signature: tuple) -> None:
             caption="Annotated — skeleton + bbox",
             use_container_width=True,
         )
+    mode = st.session_state.get("model_mode", "image")
+    badge_suffix = " — Multimodal (Pose + Vision)" if mode == "multimodal" else ""
     st.success(
         "Predicted signal: "
         f"{result.predicted_class} "
         f"(confidence {result.probabilities[result.predicted_class]:.2f})"
+        f"{badge_suffix}"
     )
     st.bar_chart(result.probabilities)
     st.dataframe(
@@ -166,6 +170,9 @@ def render_video_tab(cfg_signature: tuple) -> None:
             "as frames are processed."
         )
         return
+
+    if st.session_state.get("model_mode") == "multimodal":
+        st.caption("Active model: Multimodal (Pose + Vision)")
 
     col1, col2, col3, col4 = st.columns(4)
     tile_runs = col1.empty()
@@ -309,6 +316,8 @@ def render_video_tab(cfg_signature: tuple) -> None:
             from src.scoreboard import UNTRAINED_SMOKE_MARKER
 
             lines.append(UNTRAINED_SMOKE_MARKER)
+        elif st.session_state.get("model_mode") == "multimodal":
+            lines.append("Model: Multimodal (Pose + Vision)")
         st.success("\n\n".join(lines))
 
         st.download_button(
@@ -323,13 +332,20 @@ def render_metrics_tab() -> None:
     """Tab 3 — Research Metrics (UI-04; UI-SPEC Per-Tab Layout Contract).
 
     Verbatim ablation study report, container-width confusion matrix,
-    and render-time extracted sha256 lineage caption. Fail-closed on missing artifacts.
+    and render-time extracted sha256 lineage caption. Also renders
+    Phase 6 Multimodal Ablation Report alongside baseline metrics (FUSE-04).
     """
     artifacts = load_metrics_artifacts(REPO_ROOT)
     if isinstance(artifacts, str):
         st.error(artifacts)
         return
     report_text, png_path = artifacts
+
+    multimodal_text = load_multimodal_metrics_report(REPO_ROOT)
+    if multimodal_text:
+        st.markdown(multimodal_text)
+        st.divider()
+
     st.markdown(report_text)
     st.image(str(png_path), use_container_width=True)
     lineage_lines = extract_lineage_lines(report_text)

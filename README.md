@@ -2,7 +2,7 @@
 
 An end-to-end computer vision and machine learning pipeline that recognizes cricket umpire hand signals from static images and video feeds, and automatically maintains an official cricket match scoreboard in accordance with MCC Laws of Cricket.
 
-The system incorporates a multi-source data ingestion pipeline with perceptual hash deduplication, YOLOv8-pose keypoint extraction with torso-normalized geometry engineering, an ablation benchmark comparing classical and modern architectures, a temporal stabilizer with EMA smoothing and release-based re-arming, and a deterministic headless inference engine.
+The system incorporates a multi-source data ingestion pipeline with perceptual hash deduplication, YOLOv8-pose keypoint extraction with torso-normalized geometry engineering, a multimodal fusion architecture combining 81-D relational pose geometry with 576-D MobileNetV3 visual appearance embeddings reaching **92.00% accuracy**, an ablation benchmark comparing classical and modern architectures, a temporal stabilizer with EMA smoothing and release-based re-arming, and a deterministic headless inference engine.
 
 ---
 
@@ -15,12 +15,14 @@ The system incorporates a multi-source data ingestion pipeline with perceptual h
   - [Stage 3: Training & Ablation Benchmark](#stage-3-model-training--ablation-study)
   - [Stage 4: Headless Inference Engine & Scoreboard FSM](#stage-4-video-inference-stabilizer--automated-scoreboard)
   - [Stage 5: User Interfaces](#stage-5-user-interfaces)
-- [Ablation Study Results](#ablation-study-results)
+  - [Stage 6: Multimodal Fusion & Production Integration](#stage-6-multimodal-fusion--production-integration)
+- [Ablation Study & Multimodal Benchmark Results](#ablation-study--multimodal-benchmark-results)
 - [Environment Setup](#environment-setup)
 - [Complete Manual Execution Guide (Without Streamlit)](#complete-manual-execution-guide-without-streamlit)
   - [Step 1: Dataset Ingestion & Audit](#1-dataset-ingestion--audit)
   - [Step 2: Pose & Geometric Feature Extraction](#2-pose--geometric-feature-extraction)
   - [Step 3: Train Models & Run Ablation Study](#3-train-models--run-ablation-study)
+  - [Step 3b: Train Multimodal Fusion Model](#3b-train-multimodal-fusion-model-fuse)
   - [Step 4: Manual Inference via CLI](#4-manual-inference-via-cli)
   - [Step 5: Programmatic Python API Usage](#5-programmatic-python-api-usage)
   - [Step 6: Running the Test Suite](#6-running-the-test-suite)
@@ -52,7 +54,7 @@ flowchart TD
     end
 
     subgraph S3["Stage 3: Model Training & Ablation"]
-        NPZ --> TRAIN_SPLIT["Frozen Train Split (334) / Test Split (84)"]
+        NPZ --> TRAIN_SPLIT["Frozen Train Split (398) / Test Split (100)"]
         TRAIN_SPLIT --> AUG["Train-Only Augmentation<br/>(Mirror Flip + Jitter)"]
         AUG --> MOD_A["Model A: Mili et al. Baseline ANN"]
         AUG --> MOD_B["Model B: Pose MLP"]
@@ -62,12 +64,20 @@ flowchart TD
         MOD_D --> ABL_REPORT["reports/ablation_study.md<br/>reports/confusion_matrix.png"]
     end
 
+    subgraph S6["Stage 6: Multimodal Fusion (FUSE)"]
+        NPZ --> EXT_POSE["Extended 81-D Relational Pose<br/>(22 Relational Features)"]
+        MANIFEST --> CROP_VIS["MobileNetV3-Small Extractor<br/>(576-D Appearance Embeddings)"]
+        EXT_POSE --> FUSION["Multimodal Late Fusion<br/>(0.5 * P_pose + 0.5 * P_vis)"]
+        CROP_VIS --> FUSION
+        FUSION --> FUSE_BUNDLE["models/multimodal_fusion.joblib<br/>(92.00% Accuracy / 0.9072 F1)"]
+    end
+
     subgraph S4["Stage 4: Inference Engine & Scoreboard"]
-        INPUT["Input Image / MP4 Video"] --> INTEGRITY["Startup 5-Digest Integrity Sweep<br/>(Fail-Closed SHA-256 Check)"]
+        INPUT["Input Image / MP4 Video"] --> INTEGRITY["Startup 6-Digest Integrity Sweep<br/>(Fail-Closed SHA-256 Check)"]
         INTEGRITY --> STRIDE["Frame Sampler (Stride=2)"]
-        STRIDE --> INFER_FEAT["Pose Feature Extractor"]
-        INFER_FEAT --> ENSEMBLE["Model D Inference Adapter"]
-        ENSEMBLE --> STABILIZER["Temporal Stabilizer<br/>(EMA alpha=0.3, Window=12, Gate=0.75)"]
+        STRIDE --> INFER_FEAT["Pose & Vision Feature Extractors"]
+        INFER_FEAT --> FUSE_BUNDLE
+        FUSE_BUNDLE --> STABILIZER["Temporal Stabilizer<br/>(EMA alpha=0.3, Window=12, Gate=0.75)"]
         STABILIZER --> REARM["Release-Based Re-arming & Cooldown"]
         REARM --> SCOREBOARD["Automated Scoreboard FSM<br/>(MCC Laws: Runs, Wickets, Overs, Extras)"]
         SCOREBOARD --> RENDERER["Visual HUD Annotation Renderer"]
@@ -149,18 +159,51 @@ flowchart TD
   - **Tab 3: Research Dashboard:** Interactive inspection of the Phase 3 ablation study, confusion matrix, and performance metrics.
 - **Headless CLI (`src/run_inference.py`):** Direct manual execution for batch processing, video rendering, and headless server environments.
 
+### Stage 6: Multimodal Fusion & Production Integration
+- **Entry point:** `src/train_multimodal.py` (supported by `src/models/multimodal.py`, `src/inference/vision_extractor.py`, and `src/pose_features.py`).
+- **Extended 81-D pose relational geometry (FUSE-01):**
+  - Extends 59-D legacy keypoint vectors with 22 relational features proven in research spikes:
+    - Wrist-to-wrist Euclidean distance, horizontal $dx$, and vertical $dy$ normalized by torso scale.
+    - Wrist-to-nose vertical elevation $dy$ (left, right, max, min, absolute difference).
+    - Wrist-to-hip normalized distances.
+    - Wrist-to-shoulder distances (same side and cross-shoulder reach).
+    - Elbow-to-shoulder $dx$ and $dy$ elevations.
+    - Upper-body bounding box span ($x, y$) and aspect ratio.
+    - Mean upper-body arm keypoint confidence.
+- **Visual appearance embeddings (FUSE-02):**
+  - Lightweight `MobileNetV3-Small` backbone (`torchvision.models.mobilenet_v3_small(weights='DEFAULT')`) with `nn.Identity()` classifier producing 576-D float32 appearance vectors (~15ms CPU inference).
+  - 10% context-padded bounding-box cropping with automatic center-crop fallback on missing/degenerate boxes.
+- **Multimodal Late Probability Fusion (FUSE-03):**
+  - Late probability blending combining pose HistGradientBoosting and vision LogisticRegression:
+    $$P_{\text{fused}} = 0.5 \cdot P_{\text{pose}} + 0.5 \cdot P_{\text{vis}}$$
+  - Reaches **92.00% accuracy** and **0.9072 macro-F1** on the frozen 100-sample test slice, breaking the 84% pose-only ceiling.
+- **Integrity binding & outputs:**
+  - `models/multimodal_fusion.joblib` with SHA-256 bound in `configs/model_digests.yaml`.
+  - Comprehensive ablation log in `reports/multimodal_ablation.md`.
+
 ---
 
-## Ablation Study Results
+## Ablation Study & Multimodal Benchmark Results
 
-Evaluated on the held-out test split (84 images, zero leakage):
+Evaluated on the frozen held-out test split (100 images, leak-free discipline):
 
-| Model | Architecture | Features | Accuracy | Macro-F1 | ROC-AUC | Status |
-| :--- | :--- | :--- | :---: | :---: | :---: | :--- |
-| **Model A** | Baseline ANN (Mili et al.) | 51 Raw Keypoints | 73.81% | 0.7227 | 0.9292 | Replicated Baseline |
-| **Model B** | Pose MLP (Cosine Anneal) | 51 Torso-Norm Keypoints | 77.38% | 0.7737 | 0.9603 | Outperforms Baseline |
-| **Model C** | Residual MLP (Class-Weighted) | 59 Engineered Features | 75.00% | 0.7412 | 0.9354 | Outperforms Baseline |
-| **Model D** | **Hybrid Ensemble (C + XGB + RF)** | **59 Engineered Features** | **84.52%** | **0.8264** | **0.9543** | **Best Proposed Model** |
+| Architecture | Input Representation | Model / Backbone | Accuracy | Macro-F1 | Status |
+| :--- | :--- | :--- | :---: | :---: | :--- |
+| **Model A** | 51 Raw Keypoints | 2-layer ANN (Mili et al.) | 78.00% | 0.7818 | Replicated Baseline |
+| **Model B** | 51 Torso-Norm Keypoints | Pose MLP (Cosine Anneal) | 44.00% | 0.3456 | Unweighted Baseline |
+| **Model C** | 59 Engineered Features | Residual MLP (Class-Weighted) | 78.00% | 0.7753 | Outperforms Baseline |
+| **Model D** | 59 Engineered Features | Hybrid Ensemble (C + XGB + RF) | 84.00% | 0.8376 | Best Pose-Only Model |
+| **FUSE-01** | 81-D Extended Geometry | HistGradientBoosting (RobustScaler) | 86.00% | 0.8615 | Expanded 2D Relational Math |
+| **FUSE-02** | 576-D Visual Embeddings | MobileNetV3-Small + LogisticRegression | 78.00% | 0.7659 | Visual Appearance Alone |
+| **FUSE-03** | **81-D Pose + 576-D Vision** | **Multimodal Late Fusion (0.5 + 0.5)** | **92.00%** | **0.9072** | **Production Target Bar Met (>=91% / >=0.90)** |
+
+### Per-Class F1 Performance (Multimodal Late Fusion)
+- **Six**: F1 = 1.0000 (12/12 correct)
+- **Wide**: F1 = 0.9545 (21/23 recall, 100% precision)
+- **NoAction**: F1 = 0.9412 (24/25 recall, 92% precision)
+- **NoBall**: F1 = 0.9000 (18/19 recall, 86% precision)
+- **Out**: F1 = 0.8696 (10/12 recall, 91% precision)
+- **Four**: F1 = 0.7778 (7/9 recall, 78% precision — lifted from 0.67–0.70 pose-only by visual sleeve contour)
 
 ---
 
@@ -254,11 +297,19 @@ python src/train_ablation.py --models A,D
 python src/train_ablation.py --dry-run
 ```
 
+### 3b. Train Multimodal Fusion Model (FUSE)
+Trains the late probability fusion classifier combining 81-D extended pose relational features with 576-D MobileNetV3 visual appearance embeddings. Evaluates on the held-out test split, asserts accuracy $\ge 91\%$ and macro-F1 $\ge 0.90$, serializes `models/multimodal_fusion.joblib`, locks its SHA-256 digest into `configs/model_digests.yaml`, and outputs `reports/multimodal_ablation.md`:
+
+```powershell
+# Train multimodal fusion model and evaluate against frozen 100-sample test slice
+python src/train_multimodal.py
+```
+
 ### 4. Manual Inference via CLI
 The inference runner `src/run_inference.py` allows offline evaluation of images and videos.
 
 #### Pre-flight Digest Integrity Verification (Dry-Run)
-Verifies that all 5 model artifacts exist and match their expected SHA-256 hashes:
+Verifies that all 6 model artifacts exist and match their expected SHA-256 hashes:
 ```powershell
 python src/run_inference.py --dry-run
 ```
@@ -376,7 +427,7 @@ All pipeline settings are controlled through human-readable YAML configurations 
 | :--- | :--- | :--- |
 | `configs/classes.yaml` | Class mappings & filtering rules | `canonical_classes`, `mapping`, `conditional_classes`, `exclude_as_class` |
 | `configs/inference.yaml` | Video analyzer & stabilizer parameters | `stride` (2), `window` (12), `alpha` (0.3), `threshold` (0.75), `cooldown_seconds` (4.0), `require_release` (true) |
-| `configs/model_digests.yaml` | Integrity hash registry for artifacts | SHA-256 digests for `baseline_ann.pt`, `pose_mlp.pt`, `ensemble_model.joblib`, `label_encoder.joblib`, and `yolov8n-pose.pt` |
+| `configs/model_digests.yaml` | Integrity hash registry for artifacts | SHA-256 digests for `baseline_ann.pt`, `pose_mlp.pt`, `ensemble_model.joblib`, `label_encoder.joblib`, `yolov8n-pose.pt`, and `multimodal_fusion.joblib` |
 | `configs/pose.yaml` | Pose estimation settings | `weights_path`, `device` (`cpu`), `confidence_threshold` (0.20) |
 | `configs/paths.yaml` | File paths for raw and processed datasets | Locations of raw archive directories, processed crops, and manifest |
 
@@ -402,6 +453,7 @@ implementation/
 │   ├── baseline_ann.pt         # Replicated Mili et al. Model A weights
 │   ├── ensemble_model.joblib   # Best Model D (Ensemble of Model C + XGB + RF)
 │   ├── label_encoder.joblib    # Scikit-learn LabelEncoder mapping
+│   ├── multimodal_fusion.joblib # Trained Phase 6 late-fusion multimodal bundle (92.00% acc)
 │   ├── pose_mlp.pt             # Model B (Torso-normalized MLP) weights
 │   └── yolov8n-pose.pt         # Ultralytics YOLOv8 nano pose backbone
 ├── reports/                    # Generated reports, metrics, and figures
@@ -409,13 +461,15 @@ implementation/
 │   ├── classification_report.txt # Per-class precision, recall, F1 metrics
 │   ├── confusion_matrix.png    # Test split confusion matrix plot
 │   ├── dedup_audit.md          # pHash deduplication audit log
-│   └── features_build.md       # Pose feature extraction provenance log
+│   ├── features_build.md       # Pose feature extraction provenance log
+│   └── multimodal_ablation.md  # Multimodal fusion 92% benchmark evaluation report
 ├── src/                        # Core pipeline source code
-│   ├── inference/              # Phase 4 inference engine
+│   ├── inference/              # Phase 4 inference engine & Phase 6 vision extractor
 │   │   ├── analyzer.py         # Main UmpireVideoAnalyzer composition root
 │   │   ├── config.py           # Fail-closed inference configuration loader
 │   │   ├── renderer.py         # Visual skeleton and scoreboard HUD renderer
-│   │   └── stabilizer.py       # Temporal EMA stabilizer and fire-gate deque
+│   │   ├── stabilizer.py       # Temporal EMA stabilizer and fire-gate deque
+│   │   └── vision_extractor.py # MobileNetV3 visual appearance feature extractor
 │   ├── ingestion/              # Phase 1 dataset discovery and deduplication
 │   │   ├── adapters.py         # Roboflow and folder format parsers
 │   │   ├── audit.py            # Deduplication reconciliation report writer
@@ -427,15 +481,17 @@ implementation/
 │   │   ├── baseline_ann.py     # Model A 2-layer ANN architecture
 │   │   ├── data.py             # Feature loader and SHA-256 integrity checker
 │   │   ├── ensemble.py         # Model D soft-voting ensemble builder
+│   │   ├── multimodal.py       # MultimodalFusionClassifier bundle class
 │   │   ├── pose_mlp.py         # Model B & C PyTorch architectures
 │   │   └── temporal.py         # Phase 2 Two-Head BiGRU temporal stub
 │   ├── app_support.py          # Streamlit UI validation and data mapping helpers
 │   ├── build_features.py       # Batch feature extraction script
 │   ├── data_ingestion.py       # Dataset ingestion CLI
-│   ├── pose_features.py        # Keypoint extractor and geometry math
+│   ├── pose_features.py        # Keypoint extractor and 81-D extended geometry math
 │   ├── run_inference.py        # Headless inference CLI runner
 │   ├── scoreboard.py           # Cricket scoreboard FSM & MCC law engine
-│   └── train_ablation.py       # Model training & ablation runner CLI
+│   ├── train_ablation.py       # Phase 3 model training & ablation runner CLI
+│   └── train_multimodal.py     # Phase 6 multimodal training runner CLI
 ├── tests/                      # Pytest test suite (unit, integration, and E2E)
 ├── app.py                      # Interactive Streamlit application
 ├── requirements.txt            # Python dependency specification

@@ -23,10 +23,17 @@ Contents (image half; the video half + CSV helpers arrive with Plan 05-02):
 
 from __future__ import annotations
 
+import csv
+import io
+import tempfile
+from collections.abc import Sequence
+from pathlib import Path
+
 import cv2
 import numpy as np
 
 from src.pose_features import engineered_features, mask_keypoints, torso_scale
+from src.scoreboard import EVENT_CSV_COLUMNS, EventLogEntry
 
 # Locked limits (UI-SPEC Upload Validation table) — bytes, enforced on the
 # in-memory buffer length before any content sniff or engine call.
@@ -43,6 +50,17 @@ IMAGE_WRONG_CONTENT_COPY = (
     "Unsupported image — '{name}' is not a readable JPG/PNG (content check "
     "failed). Please upload a .jpg or .png image; the file type is verified "
     "by content, not extension."
+)
+VIDEO_OVERSIZE_COPY = (
+    "Video too large — '{name}' is {size_mb} MB. The limit is 200 MB — "
+    "please upload a shorter or more compressed clip."
+)
+VIDEO_WRONG_CONTENT_COPY = (
+    "Unsupported video — '{name}' did not decode as a video OpenCV can read. "
+    "Please upload an MP4 clip (content is verified by decode, not extension)."
+)
+PROGRESS_UNKNOWN_CAPTION = (
+    "Video length unknown — progress measured against the max_frames guard."
 )
 
 # Exact UI-SPEC Typed-Error Rendering templates (persistent st.error blocks;
@@ -131,3 +149,170 @@ def arm_angle_rows(raw51, mask_conf) -> list[dict]:
         {"Feature": label, "Value": float(value)}
         for label, value in zip(ARM_ANGLE_LABELS, geometry)
     ]
+
+
+# ----------------------------------------------------------------------
+# Video-half helpers and CSV serializer (Plan 05-02)
+# ----------------------------------------------------------------------
+
+
+def check_video_bytes(name: str, data: bytes) -> str | None:
+    """Upload size gate for videos (T-05-03): size check FIRST on the
+    in-memory buffer length before any temporary file write or decode.
+    Returns the exact UI-SPEC toast copy on oversize, or None when within limit.
+    """
+    if len(data) > VIDEO_LIMIT_BYTES:
+        size_mb = round(len(data) / 1048576, 1)
+        return VIDEO_OVERSIZE_COPY.format(name=name, size_mb=size_mb)
+    return None
+
+
+def write_video_tempfile(data: bytes) -> Path:
+    """Write raw video bytes to an ephemeral temp file in the OS temp directory.
+    delete=False is REQUIRED on Windows so cv2 can open it. The caller must
+    ensure the temporary file is unlinked.
+    """
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+        tmp.write(data)
+        tmp.flush()
+        return Path(tmp.name)
+
+
+def probe_video_decode(path: Path | str) -> tuple[bool, float, int | None]:
+    """Decode probe via OpenCV: verifies file opens and first frame can be grabbed.
+    Returns (ok, fps_raw, estimate_frame_count). estimate is None when unknown or <= 0.
+    """
+    cap = cv2.VideoCapture(str(path))
+    try:
+        if not cap.isOpened():
+            return False, 0.0, None
+        grabbed = cap.grab()
+        if not grabbed:
+            return False, 0.0, None
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
+        raw_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        estimate = raw_count if raw_count > 0 else None
+        return True, fps, estimate
+    finally:
+        cap.release()
+
+
+def build_event_csv_bytes(events: Sequence[EventLogEntry]) -> bytes:
+    """Build the single-source Phase 5 event log CSV bytes (UI-03 contract).
+    Header is list(EVENT_CSV_COLUMNS), followed by entry.to_row() for each event.
+    """
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(list(EVENT_CSV_COLUMNS))
+    for entry in events:
+        writer.writerow(entry.to_row())
+    return out.getvalue().encode("utf-8")
+
+
+def event_log_rows(events: Sequence[EventLogEntry]) -> list[list]:
+    """Format events for Tab 2 UI display: the 7 to_row() values under
+    EVENT_CSV_COLUMNS with confidence rendered to 4 decimals, plus
+    smoke_marker as the 8th display column.
+    """
+    rows = []
+    for entry in events:
+        row = list(entry.to_row())
+        row[2] = f"{entry.confidence:.4f}"
+        row.append(entry.smoke_marker)
+        rows.append(row)
+    return rows
+
+
+def format_failure_tally(tally: dict[str, int]) -> str:
+    """Format failure tally as sorted 'label=count' pairs joined with two spaces,
+    or 'none' when empty (CLI wording).
+    """
+    if not tally:
+        return "none"
+    return "  ".join(f"{label}={count}" for label, count in sorted(tally.items()))
+
+
+def compute_progress(frames_read: int, estimate: int | None, max_frames: int) -> float:
+    """Calculate progress fraction clamped to [0.0, 1.0]. Uses estimate if valid,
+    else falls back to max_frames guard.
+    """
+    denom = estimate if (estimate is not None and estimate > 0) else max_frames
+    if denom <= 0:
+        return 1.0
+    return min(max(frames_read / denom, 0.0), 1.0)
+
+
+def execute_video_job(
+    analyzer,
+    video_bytes: bytes,
+    on_progress=None,
+    on_frame=None,
+    on_event=None,
+    name: str = "upload",
+) -> dict | str:
+    """Execute video analysis job with size check, decode probe, and guaranteed tempfile cleanup.
+    Returns error toast string on validation failure, or dict with job results on success.
+    """
+    toast = check_video_bytes(name, video_bytes)
+    if toast is not None:
+        return toast
+
+    tmp_path = write_video_tempfile(video_bytes)
+    try:
+        ok, fps, estimate = probe_video_decode(tmp_path)
+        if not ok:
+            return VIDEO_WRONG_CONTENT_COPY.format(name=name)
+
+        from src.inference.analyzer import analyzer_events
+        from src.inference.stabilizer import stabilizer_events
+
+        events_baseline = len(analyzer_events())
+        stabilizer_events_baseline = len(stabilizer_events())
+
+        events = []
+        last_strided_frame = None
+        strided_count = 0
+        frames_read = 0
+
+        stride = analyzer.cfg.get("stride", 1)
+
+        for record in analyzer.analyze_stream(tmp_path):
+            frames_read = record.frame_idx + 1
+            if on_progress is not None:
+                try:
+                    on_progress(frames_read, estimate)
+                except TypeError:
+                    on_progress(frames_read)
+
+            if record.frame_idx % stride == 0:
+                strided_count += 1
+                last_strided_frame = record.annotated
+                if on_frame is not None:
+                    on_frame(record.annotated)
+
+            if record.new_events:
+                for ev in record.new_events:
+                    events.append(ev)
+                    if on_event is not None:
+                        on_event(ev)
+
+        tally: dict[str, int] = {}
+        for line in analyzer_events()[events_baseline:]:
+            label = line.split(": ", 1)[0]
+            tally[label] = tally.get(label, 0) + 1
+        for line in stabilizer_events()[stabilizer_events_baseline:]:
+            label = line.split(": ", 1)[0]
+            tally[label] = tally.get(label, 0) + 1
+
+        return {
+            "events": tuple(events),
+            "last_frame": last_strided_frame,
+            "frames_read": frames_read,
+            "strided": strided_count,
+            "fps_reported": fps,
+            "estimate": estimate,
+            "aborted": "max_frames_abort" in tally,
+            "tally": tally,
+        }
+    finally:
+        tmp_path.unlink(missing_ok=True)

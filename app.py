@@ -24,9 +24,15 @@ import streamlit as st
 
 from src.app_support import (
     IMAGE_WRONG_CONTENT_COPY,
+    PROGRESS_UNKNOWN_CAPTION,
     arm_angle_rows,
+    build_event_csv_bytes,
     check_image_bytes,
+    compute_progress,
     decode_image_bgr,
+    event_log_rows,
+    execute_video_job,
+    format_failure_tally,
     typed_error_copy,
 )
 from src.inference.analyzer import UmpireVideoAnalyzer
@@ -137,6 +143,180 @@ def render_image_tab(cfg_signature: tuple) -> None:
     )
 
 
+def render_video_tab(cfg_signature: tuple) -> None:
+    """Tab 2 — Video Analyzer (UI-02, UI-03; UI-SPEC Per-Tab Layout Contract).
+
+    Upload match clip -> button press -> decode probe through tempfile
+    -> analyze_stream loop updating progress, metric tiles, frame slot, event log
+    -> summary block + CSV download.
+    """
+    uploaded = st.file_uploader(
+        "Upload a match clip (MP4/MOV/AVI/MKV/WEBM, up to 200 MB)",
+        type=["mp4", "mov", "avi", "mkv", "webm"],
+    )
+    analyze_clicked = st.button("Analyze video", type="primary")
+
+    if not analyze_clicked and st.session_state.get("last_run_summary") is None:
+        st.subheader("No video yet")
+        st.markdown(
+            "Upload an MP4 clip (up to 200 MB) and press Analyze video — "
+            "annotated frames, the live scoreboard, and the event log appear "
+            "as frames are processed."
+        )
+        return
+
+    col1, col2, col3, col4 = st.columns(4)
+    tile_runs = col1.empty()
+    tile_wickets = col2.empty()
+    tile_overs = col3.empty()
+    tile_extras = col4.empty()
+
+    def update_tiles(score_tuple):
+        runs, wickets, overs, extras = score_tuple
+        tile_runs.metric("Runs", runs)
+        tile_wickets.metric("Wickets", wickets)
+        tile_overs.metric("Overs", overs)
+        tile_extras.metric("Extras", extras)
+
+    frame_slot = st.empty()
+    log_slot = st.empty()
+
+    if analyze_clicked:
+        if uploaded is None:
+            st.error("Please upload a video file first.")
+            return
+
+        try:
+            analyzer = get_analyzer(cfg_signature)
+        except ValueError as err:
+            st.error(typed_error_copy("integrity", str(err)))
+            return
+
+        st.session_state["model_mode"] = analyzer.cfg["model"]
+        update_tiles((
+            analyzer.score_state.runs,
+            analyzer.score_state.wickets,
+            analyzer.score_state.overs,
+            analyzer.score_state.extras,
+        ))
+        log_slot.caption(
+            "No events yet — signals appear here as the stabilizer fires."
+        )
+
+        progress_bar = st.progress(0.0)
+        progress_caption_slot = st.empty()
+
+        events_live: list = []
+
+        def on_progress(frames_read, estimate):
+            frac = compute_progress(
+                frames_read, estimate, analyzer.cfg["max_frames"]
+            )
+            progress_bar.progress(frac)
+            if estimate is None or estimate <= 0:
+                progress_caption_slot.caption(PROGRESS_UNKNOWN_CAPTION)
+
+        def on_frame(annotated):
+            frame_slot.image(annotated[:, :, ::-1], use_container_width=True)
+
+        def on_event(ev):
+            events_live.append(ev)
+            update_tiles(ev.score)
+            log_slot.dataframe(
+                event_log_rows(events_live),
+                height=320,
+                use_container_width=True,
+            )
+
+        data = uploaded.getvalue()
+        try:
+            job = execute_video_job(
+                analyzer,
+                data,
+                on_progress=on_progress,
+                on_frame=on_frame,
+                on_event=on_event,
+                name=uploaded.name,
+            )
+        except ValueError as err:
+            st.error(typed_error_copy("input", str(err)))
+            return
+
+        if isinstance(job, str):
+            st.error(job)
+            return
+
+        st.session_state["last_run_summary"] = {
+            "frames_read": job["frames_read"],
+            "strided": job["strided"],
+            "fps_reported": job["fps_reported"],
+            "tally": job["tally"],
+            "aborted": job["aborted"],
+            "score": (
+                analyzer.score_state.runs,
+                analyzer.score_state.wickets,
+                analyzer.score_state.overs,
+                analyzer.score_state.extras,
+            ),
+            "event_count": len(job["events"]),
+            "max_frames": analyzer.cfg["max_frames"],
+        }
+        st.session_state["last_run_events"] = job["events"]
+        st.session_state["last_run_last_frame"] = job["last_frame"]
+
+    summary = st.session_state.get("last_run_summary")
+    if summary is not None:
+        update_tiles(summary["score"])
+        if st.session_state.get("last_run_last_frame") is not None:
+            frame_slot.image(
+                st.session_state["last_run_last_frame"][:, :, ::-1],
+                use_container_width=True,
+            )
+        events = st.session_state.get("last_run_events", ())
+        if events:
+            log_slot.dataframe(
+                event_log_rows(events),
+                height=320,
+                use_container_width=True,
+            )
+        else:
+            log_slot.caption(
+                "No events yet — signals appear here as the stabilizer fires."
+            )
+
+        if summary.get("aborted"):
+            cap = summary.get("max_frames", 100000)
+            st.warning(
+                f"Video stopped at the max_frames guard — {summary['frames_read']} "
+                f"frames processed (config cap: {cap}). The scoreboard, event "
+                "log, and summary below cover only the frames processed."
+            )
+
+        lines = [
+            f"Run complete — frames read: {summary['frames_read']}  "
+            f"strided: {summary['strided']}  fps_reported: {summary['fps_reported']}",
+            f"typed failure tallies: {format_failure_tally(summary['tally'])}",
+            f"Score: {summary['score'][0]} runs/{summary['score'][1]} wickets/"
+            f"{summary['score'][2]} overs/{summary['score'][3]} extras",
+        ]
+        if summary["event_count"] > 0:
+            lines.append(f"{summary['event_count']} gated signal event(s) fired")
+        else:
+            lines.append("no gated signal events fired")
+        if st.session_state.get("model_mode") == "temporal":
+            from src.scoreboard import UNTRAINED_SMOKE_MARKER
+
+            lines.append(UNTRAINED_SMOKE_MARKER)
+        st.success("\n\n".join(lines))
+
+        st.download_button(
+            "Download event log (CSV)",
+            data=build_event_csv_bytes(st.session_state["last_run_events"]),
+            file_name="event_log.csv",
+            mime="text/csv",
+        )
+
+
 def main() -> None:
     """App entry: page config -> [config] boundary -> sidebar status block ->
     exactly 3 tabs (Tab 1 wired end-to-end; Tab 2/3 carry the exact
@@ -192,14 +372,7 @@ def main() -> None:
     with tab1:
         render_image_tab(cfg_signature)
     with tab2:
-        # Empty state now; the uploader + Analyze-video loop arrive with
-        # Plan 05-02 (final contract copy below).
-        st.subheader("No video yet")
-        st.markdown(
-            "Upload an MP4 clip (up to 200 MB) and press Analyze video — "
-            "annotated frames, the live scoreboard, and the event log appear "
-            "as frames are processed."
-        )
+        render_video_tab(cfg_signature)
     with tab3:
         # Signpost only; replaced by the Plan 05-03 tracer.
         st.info(

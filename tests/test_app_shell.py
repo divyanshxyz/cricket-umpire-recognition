@@ -93,6 +93,15 @@ def test_shell_sidebar_captions_are_config_derived():
     ]
 
 
+def test_shell_has_no_download_button_before_run():
+    """Before any completed run, no download button exists in the app
+    (the empty-state UI-Considerations row: the CSV download button renders
+    only after a completed run)."""
+    at = _run_app()
+    assert at.exception == []
+    assert len(at.download_button) == 0
+
+
 def test_shell_session_state_initialized_from_config():
     """session_state['model_mode'] initializes from the loaded
     configs/inference.yaml; the run-summary/event keys exist for Tab 2."""

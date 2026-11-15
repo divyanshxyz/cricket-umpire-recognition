@@ -246,6 +246,19 @@ def _override_config(tmp_path, **overrides):
     return cfg_path
 
 
+def test_classify_image_temporal_mode_fails_closed_naming_mode(tmp_path):
+    """Rule 2 guard pin (weight-free): the temporal arm never loads the
+    image model/labels, so a single-image query in temporal mode fails
+    closed naming the observed mode BEFORE any model work — never a latent
+    None-subscript crash."""
+    cfg = _override_config(tmp_path, model="temporal")
+    analyzer = UmpireVideoAnalyzer(config_path=cfg)
+    with pytest.raises(ValueError) as exc:
+        analyzer.classify_image("whatever.jpg")
+    assert "temporal" in str(exc.value)
+    assert "model: image" in str(exc.value)
+
+
 @_requires_fixture_image
 def test_temporal_mode_determinism_double_run(real_image_fixture_video, tmp_path):
     """P2RDY-02 determinism contract (RESEARCH Pitfall 5): two fresh

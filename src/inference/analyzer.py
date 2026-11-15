@@ -649,20 +649,12 @@ class UmpireVideoAnalyzer:
         default. The predicted class uses numpy's first-index argmax
         tie-break (Phase 3 backstop) over the asserted LabelEncoder-sorted
         probability vector."""
-        raw, payload = self.extractor.extract(image)
-        if raw is None:
-            raise ValueError(
-                f"classify_image: extraction failed for {image} "
-                f"({payload.reason}: {payload.detail}) — a single-image "
-                "query without a detectable umpire is an error, not a "
-                "silent default (fail-closed, no silent default)"
-            )
         if self.cfg["model"] != "image":
             # Rule 2 guard (Plan 04-03): the temporal arm never loads the
             # image model/labels, so the LabelEncoder-sorted class names a
-            # single-image query needs do not exist in temporal mode —
-            # fail closed naming the observed mode instead of crashing on a
-            # None subscript.
+            # single-image query needs do not exist in temporal mode — fail
+            # closed naming the observed mode BEFORE any model work (no
+            # latent None-subscript crash, no wasted predict).
             raise ValueError(
                 f"classify_image: single-image classification requires "
                 f"model: image — this analyzer runs model "
@@ -670,6 +662,14 @@ class UmpireVideoAnalyzer:
                 "video path; no image model/labels were loaded) — rerun "
                 "with model: image in the inference config (fail-closed, "
                 "no silent default)"
+            )
+        raw, payload = self.extractor.extract(image)
+        if raw is None:
+            raise ValueError(
+                f"classify_image: extraction failed for {image} "
+                f"({payload.reason}: {payload.detail}) — a single-image "
+                "query without a detectable umpire is an error, not a "
+                "silent default (fail-closed, no silent default)"
             )
         probs = self._prob_adapter(raw)
         best = int(np.argmax(probs))

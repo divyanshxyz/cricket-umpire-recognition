@@ -33,3 +33,10 @@ opencv-python==4.14.0.94   # explicit 4.x pin: ultralytics' >=4.7.0 constraint a
 
 # --- Phase 3: Model D ensemble member (gradient-boosted trees) ---
 xgboost==3.4.1   # Phase 3: Model D ensemble member; verified against numpy 2.2.6/sklearn 1.9.1/Python 3.12.10; PyPI latest via pip index; official repo dmlc/xgboost (legitimacy checkpoint approved 03-02 Task 1)
+
+# --- Phase 5: Streamlit app (T-05-SC package-legitimacy disposition) ---
+# Canonical upstream streamlit/streamlit; empirical checks executed at install
+# (05-01 Task 1): PyPI install, import, exact version assert, pip check —
+# per-package human-verify waived per the Phase 2/3 recorded precedent
+# (revisable). Target version per UI-SPEC stack note + .claude/CLAUDE.md.
+streamlit==1.67.0

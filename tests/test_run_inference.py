@@ -3,8 +3,9 @@
 Contracts pinned here (test_ablation_report.py monkeypatch + tmp_path
 analog; weight-free by default with monkeypatched module seams):
 
-- --dry-run: config + 5-digest verification + census naming all 5 artifact
-  paths, exit 0, no torch import (train_ablation dry-run convention).
+- --dry-run: config + digest-sweep verification + census naming every
+  artifact path (the integrity count is the MEASURED len(digests) — WR-03),
+  exit 0, no torch import (train_ablation dry-run convention).
 - Integrity refusal BEFORE any deserialize (prohibition 1/2 mechanical
   check): a tampered digest or a missing artifact exits with "[integrity]"
   naming the artifact while torch.load/joblib.load recorders provably
@@ -100,7 +101,36 @@ def test_dry_run_validates_and_prints_census(capsys):
     assert len(digests) == 5
     for name, entry in digests.items():
         assert entry["path"] in out, f"census must name {entry['path']}"
-    assert "integrity: 5/5" in out
+    assert f"integrity: {len(digests)}/{len(digests)}" in out
+
+
+def test_dry_run_integrity_count_is_measured_not_hardcoded(
+    tmp_path, monkeypatch, capsys
+):
+    """WR-03: the integrity line renders len(digests), never a hardcoded
+    "5/5" — a fully-verifying 3-entry digests scaffold renders
+    "integrity: 3/3" AND "artifact census (3 entries)" consistently in the
+    same report (dummy artifacts with matching sha256s; no weights)."""
+    scaffold = _make_scaffold(tmp_path)
+    lines = ["artifacts:"]
+    for name in ARTIFACT_ORDER[:3]:  # baseline_ann, pose_mlp, ensemble_model
+        rel = _real_digests()[name]["path"]
+        artifact = scaffold / rel
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(f"dummy {name} bytes".encode("utf-8"))
+        lines.append(f"  {name}:")
+        lines.append(f"    path: {rel}")
+        lines.append(f'    sha256: "{sha256_of(artifact)}"')
+    (scaffold / "configs" / "model_digests.yaml").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+    _patch_scaffold_roots(monkeypatch, scaffold)
+
+    assert ri.main(["--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "integrity: 3/3 artifact digests verified" in out
+    assert "artifact census (3 entries):" in out
+    assert "5/5" not in out, "the hardcoded 5/5 literal must be gone"
 
 
 def test_tampered_artifact_refused_before_deserialize(tmp_path, monkeypatch, capsys):

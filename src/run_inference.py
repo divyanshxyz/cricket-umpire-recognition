@@ -81,8 +81,13 @@ def _run_dry_run(cfg_path) -> int:
 
     lines = []
     lines.append("=== run_inference dry-run ===")
-    lines.append("integrity: 5/5 artifact digests verified against "
-                 "configs/model_digests.yaml (no deserialization performed)")
+    # WR-03: the reported count is the MEASURED len(digests), never a magic
+    # number — the census line below already renders len(digests), so a
+    # digests file with any entry count produces a self-consistent report.
+    lines.append(
+        f"integrity: {len(digests)}/{len(digests)} artifact digests verified "
+        "against configs/model_digests.yaml (no deserialization performed)"
+    )
     lines.append("resolved params:")
     for key in (
         "model",

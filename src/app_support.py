@@ -63,6 +63,14 @@ PROGRESS_UNKNOWN_CAPTION = (
     "Video length unknown — progress measured against the max_frames guard."
 )
 
+# Tab 3 tracked artifact paths and missing-artifact copy (Plan 05-03, UI-04)
+METRICS_REPORT_PATH = "reports/ablation_study.md"
+METRICS_PNG_PATH = "reports/confusion_matrix.png"
+MISSING_ARTIFACT_COPY = (
+    "Report artifact not found — {path} is missing from disk. Restore the "
+    "tracked Phase 3 artifact and reload."
+)
+
 # Exact UI-SPEC Typed-Error Rendering templates (persistent st.error blocks;
 # the engine's message renders verbatim inside {message} — the diagnostic
 # record is never paraphrased, truncated, or swallowed).
@@ -316,3 +324,53 @@ def execute_video_job(
         }
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+# ----------------------------------------------------------------------
+# Metrics helpers (Plan 05-03, UI-04)
+# ----------------------------------------------------------------------
+
+
+def load_metrics_artifacts(
+    reports_root: Path | str,
+) -> tuple[str, Path] | str:
+    """Load Tab 3 research metrics artifacts from disk (UI-04 contract).
+    Returns (report_text, png_path) on success, or the exact MISSING_ARTIFACT_COPY
+    toast string naming the missing path if either artifact is missing.
+    Fail-closed: Tab 3 never renders partially with a silent gap.
+    """
+    root = Path(reports_root)
+    # Check if root is repo root or direct parent of report file
+    if (root / METRICS_REPORT_PATH).is_file():
+        report_path = root / METRICS_REPORT_PATH
+    elif (root / Path(METRICS_REPORT_PATH).name).is_file():
+        report_path = root / Path(METRICS_REPORT_PATH).name
+    else:
+        return MISSING_ARTIFACT_COPY.format(path=METRICS_REPORT_PATH)
+
+    if (root / METRICS_PNG_PATH).is_file():
+        png_path = root / METRICS_PNG_PATH
+    elif (root / Path(METRICS_PNG_PATH).name).is_file():
+        png_path = root / Path(METRICS_PNG_PATH).name
+    else:
+        return MISSING_ARTIFACT_COPY.format(path=METRICS_PNG_PATH)
+
+    return report_path.read_text(encoding="utf-8"), png_path
+
+
+def extract_lineage_lines(report_text: str) -> list[str]:
+    """Extract sha256-bearing lineage lines from the '## Parameter block' section
+    of reports/ablation_study.md at render time (never hardcoded)."""
+    lines = report_text.splitlines()
+    in_block = False
+    extracted = []
+    for line in lines:
+        if line.startswith("## Parameter block"):
+            in_block = True
+            continue
+        if in_block:
+            if line.startswith("## "):
+                break
+            if "sha256" in line:
+                extracted.append(line.strip())
+    return extracted

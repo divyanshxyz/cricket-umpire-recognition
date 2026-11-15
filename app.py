@@ -32,7 +32,9 @@ from src.app_support import (
     decode_image_bgr,
     event_log_rows,
     execute_video_job,
+    extract_lineage_lines,
     format_failure_tally,
+    load_metrics_artifacts,
     typed_error_copy,
 )
 from src.inference.analyzer import UmpireVideoAnalyzer
@@ -317,6 +319,24 @@ def render_video_tab(cfg_signature: tuple) -> None:
         )
 
 
+def render_metrics_tab() -> None:
+    """Tab 3 — Research Metrics (UI-04; UI-SPEC Per-Tab Layout Contract).
+
+    Verbatim ablation study report, container-width confusion matrix,
+    and render-time extracted sha256 lineage caption. Fail-closed on missing artifacts.
+    """
+    artifacts = load_metrics_artifacts(REPO_ROOT)
+    if isinstance(artifacts, str):
+        st.error(artifacts)
+        return
+    report_text, png_path = artifacts
+    st.markdown(report_text)
+    st.image(str(png_path), use_container_width=True)
+    lineage_lines = extract_lineage_lines(report_text)
+    if lineage_lines:
+        st.caption("\n\n".join(lineage_lines))
+
+
 def main() -> None:
     """App entry: page config -> [config] boundary -> sidebar status block ->
     exactly 3 tabs (Tab 1 wired end-to-end; Tab 2/3 carry the exact
@@ -374,11 +394,7 @@ def main() -> None:
     with tab2:
         render_video_tab(cfg_signature)
     with tab3:
-        # Signpost only; replaced by the Plan 05-03 tracer.
-        st.info(
-            "Research Metrics — the tracked ablation report and confusion "
-            "matrix render here (delivered by Plan 05-03)."
-        )
+        render_metrics_tab()
 
 
 if __name__ == "__main__":

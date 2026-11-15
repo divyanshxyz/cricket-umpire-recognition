@@ -102,6 +102,16 @@ def test_shell_has_no_download_button_before_run():
     assert len(at.download_button) == 0
 
 
+def test_shell_tab3_renders_verbatim_report_without_classification_report():
+    """Tab 3 renders the real tracked ablation report verbatim in markdown
+    with zero exceptions, and never renders classification_report.txt (Out of Scope)."""
+    at = _run_app()
+    assert at.exception == []
+    markdown_values = [m.value for m in at.markdown]
+    assert any("Phase 3 ablation study report" in val for val in markdown_values)
+    assert not any("classification_report.txt" in val for val in markdown_values)
+
+
 def test_shell_session_state_initialized_from_config():
     """session_state['model_mode'] initializes from the loaded
     configs/inference.yaml; the run-summary/event keys exist for Tab 2."""

@@ -11,6 +11,13 @@ effects are defined, and no analyzer/CLI code may re-derive them).
 
 from dataclasses import dataclass
 
+# T-04-07 transparency record (Plan 04-03): every temporal-mode
+# EventLogEntry carries this marker so an untrained model's output can never
+# masquerade as a trained prediction. The constant lives HERE (the pure
+# scoreboard module) as the single source — the analyzer stamps it into
+# temporal-mode entries and the CLI summary renders it verbatim.
+UNTRAINED_SMOKE_MARKER = "UNTRAINED — smoke only"
+
 # SCORE-01 law table — the ONLY place signal effects are defined.
 # runs/extras/legal_balls/wickets deltas per signal (Laws of Cricket: Wide
 # and NoBall are +1 penalty run and the ball is NOT legal; a boundary scores
@@ -73,12 +80,17 @@ class EventLogEntry:
     """One detected-signal event — the Phase 5 Tab 2 rendering + CSV download
     contract. ``score`` is the (runs_after, wickets_after, overs_str,
     extras_after) tuple produced from apply_event's result for the event;
-    to_row() renders it positionally under EVENT_CSV_COLUMNS."""
+    to_row() renders it positionally under EVENT_CSV_COLUMNS.
+    ``smoke_marker`` is the T-04-07 transparency record (UNTRAINED_SMOKE_MARKER
+    on temporal-mode entries, "" on image-mode entries) — a DISPLAY field
+    only: it is deliberately NOT an EVENT_CSV_COLUMNS column, so to_row() and
+    the Phase 5 CSV download stay exactly 7 fields."""
 
     timestamp: str
     signal: str
     confidence: float
     score: tuple
+    smoke_marker: str = ""
 
     def __post_init__(self):
         if len(self.score) != 4:

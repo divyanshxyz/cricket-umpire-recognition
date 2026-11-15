@@ -27,6 +27,7 @@ session instead of reusing one across uploads.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,10 +36,25 @@ import numpy as np
 
 from src.inference.config import load_inference_config, load_model_digests
 from src.inference.renderer import draw_annotation
-from src.inference.stabilizer import TemporalStabilizer, stabilizer_events
+from src.inference.stabilizer import (
+    CLASS_ORDER,
+    TemporalStabilizer,
+    stabilizer_events,
+)
 from src.models.data import verify_artifact_sha256
-from src.pose_features import PoseFeatureExtractor, select_umpire
-from src.scoreboard import EventLogEntry, ScoreState, apply_event
+from src.pose_features import (
+    PoseFeatureExtractor,
+    assemble_sequence,
+    mask_keypoints,
+    select_umpire,
+    torso_scale,
+)
+from src.scoreboard import (
+    UNTRAINED_SMOKE_MARKER,
+    EventLogEntry,
+    ScoreState,
+    apply_event,
+)
 
 # src/inference/ is one level deeper than src/ — same depth as src/models/*
 # (PATTERNS.md): three .parent hops resolve to the repo root.
@@ -168,18 +184,42 @@ class UmpireVideoAnalyzer:
         self._image_scaler = None
         self._image_classes = None
 
-        # Fail-closed adapter dispatch (P2RDY-02): only the image arm ships
-        # in Plan 04-02 — an unknown/temporal model value raises naming the
-        # observed value. Plan 04-03 wires the temporal arm into this map.
+        # Temporal arm (P2RDY-02): the seeded UNTRAINED stub is constructed
+        # ONCE at init when model: temporal — torch.manual_seed(42)
+        # IMMEDIATELY before TwoHeadAttentionBiGRU() (nothing between seed
+        # and construction). No checkpoint exists for the stub (models/
+        # carries none — verified), so the seed IS the determinism contract
+        # (RESEARCH Pitfall 5); the stub is never loaded from disk.
+        if self.cfg["model"] == "temporal":
+            # Lazy heavy import (mirrors the image arm's discipline):
+            # src.models.temporal imports torch at module level, so image-
+            # mode users (and --dry-run) never pay the torch import.
+            import torch
+
+            from src.models.temporal import TwoHeadAttentionBiGRU
+
+            torch.manual_seed(42)
+            self._temporal_model = TwoHeadAttentionBiGRU()
+            self._temporal_model.eval()
+            self._temporal_model.to(self.cfg["device"])
+            # Pattern 4 row buffer: assemble_sequence needs the per-frame
+            # (raw51, eng59, scale, masked_xy) rows that extract() does not
+            # return — reconstructed per strided frame in _temporal_probs.
+            self._row_buffer = deque(maxlen=15)
+
+        # Fail-closed adapter dispatch (P2RDY-02): image and temporal are
+        # the ONLY two adapters — any other cfg["model"] value raises
+        # naming the observed value (load_inference_config already pins the
+        # same enum; this guard is the belt to its braces).
         self._prob_adapters = {"image": self._image_probs}
+        if self.cfg["model"] == "temporal":
+            self._prob_adapters["temporal"] = self._temporal_probs
         adapter = self._prob_adapters.get(self.cfg["model"])
         if adapter is None:
             raise ValueError(
                 f"UmpireVideoAnalyzer: model mode {self.cfg['model']!r} has "
-                f"no probability adapter wired (only "
-                f"{sorted(self._prob_adapters)} are available) — Plan 04-03 "
-                "ships the temporal arm; until then temporal mode is a "
-                "typed fail-closed error (P2RDY-02)"
+                f"no probability adapter wired (only image | temporal are "
+                "valid — P2RDY-02 fail-closed enum, no silent default)"
             )
         self._prob_adapter = adapter
 
@@ -291,6 +331,82 @@ class UmpireVideoAnalyzer:
         vec = np.zeros(len(names), dtype=np.float32)
         vec[names.index("NoAction")] = 1.0
         return vec
+
+    # ------------------------------------------------------------------
+    # Temporal-model adapter (P2RDY-02 — seeded untrained stub, T-04-07)
+    # ------------------------------------------------------------------
+
+    def _noaction_onehot(self) -> np.ndarray:
+        """The OQ3 one-hot NoAction fallback vector for the temporal arm
+        (zeros(6) float32 with 1.0 at the NoAction index of CLASS_ORDER —
+        derived, never a literal)."""
+        vec = np.zeros(len(CLASS_ORDER), dtype=np.float32)
+        vec[CLASS_ORDER.index("NoAction")] = 1.0
+        return vec
+
+    def _temporal_probs(self, raw, payload, frame_idx) -> np.ndarray:
+        """One strided frame's temporal-mode probability vector (P2RDY-02,
+        RESEARCH Pattern 4 — one extract per frame in BOTH modes).
+
+        The (raw51, eng59, scale, masked_xy) rows assemble_sequence needs
+        are reconstructed from raw51 with the SAME pure functions
+        extract_sequence_features uses internally (mask_keypoints,
+        torso_scale — frozen seam functions, zero rewrites), buffered in
+        deque(maxlen=15), assembled to (T, 118), pad_or_truncate'd at the
+        END to 15, and the seeded untrained stub's per-timestep logits are
+        mean-pooled over time then softmaxed (A6 — semantics moot for the
+        untrained stub; fp32 in, fp32 out).
+
+        Failure policy (OQ3, typed + counted, never skipped): raw is None
+        (the frame's extraction failed) appends a None row — the frozen
+        wholesale contract then fails EVERY assemble_sequence until the
+        None evicts naturally after 15 more good appends — and each failing
+        frame feeds a one-hot NoAction vector plus a typed "sequence_failure"
+        event (T-04-08: the stabilizer keeps a single code path and
+        processing continues; the window update is never skipped)."""
+        # Lazy heavy imports (torch rides src.models.temporal at module
+        # level): image-mode users never pay them; Python caches the module
+        # so only the first strided frame imports.
+        import torch
+
+        from src.models.temporal import pad_or_truncate
+
+        if raw is None:
+            self._row_buffer.append(None)
+            record_analyzer_event(
+                "sequence_failure",
+                f"frame {frame_idx}: extraction failed ({payload.reason}: "
+                f"{payload.detail}) — None row appended to the sequence "
+                "buffer (wholesale poisoning, OQ3 one-hot NoAction quench)",
+            )
+            return self._noaction_onehot()
+        mask_conf = float(self.extractor.config["mask_conf"])
+        kpts_masked = mask_keypoints(
+            np.asarray(raw, dtype=np.float64).reshape(17, 3), mask_conf
+        )
+        scale, _source = torso_scale(kpts_masked, mask_conf, f"frame_{frame_idx}")
+        self._row_buffer.append(
+            (
+                np.asarray(raw, dtype=np.float32),
+                payload,
+                scale,
+                kpts_masked[:, :2],
+            )
+        )
+        seq, failure = assemble_sequence(list(self._row_buffer))
+        if failure is not None:
+            record_analyzer_event(
+                "sequence_failure",
+                f"frame {frame_idx}: {failure.reason}: {failure.detail} — "
+                "assemble_sequence wholesale failure (one-hot NoAction "
+                "quench, OQ3; the None row evicts after 15 more good "
+                "appends)",
+            )
+            return self._noaction_onehot()
+        x = torch.from_numpy(pad_or_truncate(seq, 15)).unsqueeze(0)  # (1,15,118)
+        with torch.no_grad():  # inference-only stub — never build a graph
+            logits = self._temporal_model(x)  # (1, 15, 6) per-timestep logits
+        return torch.softmax(logits.mean(dim=1), dim=1)[0].numpy()
 
     # ------------------------------------------------------------------
     # Annotation (the ONE extra predict per strided frame, A8)
@@ -427,11 +543,27 @@ class UmpireVideoAnalyzer:
                             payload.reason,
                             f"frame {frame_idx}: {payload.detail}",
                         )
-                        outcome = self.stabilizer.update(
-                            self._noaction_vector(), frame_idx, fps
-                        )
+                        if self.cfg["model"] == "temporal":
+                            # Temporal arm: the failed frame is a None row —
+                            # the sequence buffer is poisoned (frozen
+                            # wholesale contract) and the typed
+                            # sequence_failure event is recorded inside
+                            # _temporal_probs (OQ3/T-04-08: counted, never
+                            # skipped).
+                            probs = self._temporal_probs(
+                                None, payload, frame_idx
+                            )
+                        else:
+                            probs = self._noaction_vector()
+                        outcome = self.stabilizer.update(probs, frame_idx, fps)
                     else:
-                        probs = self._prob_adapter(raw)
+                        if self.cfg["model"] == "temporal":
+                            # Temporal arm (P2RDY-02): seeded stub probs
+                            # through the SAME stabilizer/scoreboard path —
+                            # no second pipeline.
+                            probs = self._temporal_probs(raw, payload, frame_idx)
+                        else:
+                            probs = self._prob_adapter(raw)
                         ann = self._annotate(frame, raw)
                         outcome = self.stabilizer.update(probs, frame_idx, fps)
                     if outcome.fired:
@@ -450,6 +582,11 @@ class UmpireVideoAnalyzer:
                                 new_state.wickets,
                                 new_state.overs,
                                 new_state.extras,
+                            ),
+                            smoke_marker=(
+                                UNTRAINED_SMOKE_MARKER
+                                if self.cfg["model"] == "temporal"
+                                else ""
                             ),
                         )
                         new_events = (entry,)
@@ -519,6 +656,20 @@ class UmpireVideoAnalyzer:
                 f"({payload.reason}: {payload.detail}) — a single-image "
                 "query without a detectable umpire is an error, not a "
                 "silent default (fail-closed, no silent default)"
+            )
+        if self.cfg["model"] != "image":
+            # Rule 2 guard (Plan 04-03): the temporal arm never loads the
+            # image model/labels, so the LabelEncoder-sorted class names a
+            # single-image query needs do not exist in temporal mode —
+            # fail closed naming the observed mode instead of crashing on a
+            # None subscript.
+            raise ValueError(
+                f"classify_image: single-image classification requires "
+                f"model: image — this analyzer runs model "
+                f"{self.cfg['model']!r} (temporal mode classifies via the "
+                "video path; no image model/labels were loaded) — rerun "
+                "with model: image in the inference config (fail-closed, "
+                "no silent default)"
             )
         probs = self._prob_adapter(raw)
         best = int(np.argmax(probs))

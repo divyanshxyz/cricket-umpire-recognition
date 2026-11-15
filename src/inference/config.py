@@ -10,9 +10,10 @@ unparseable config file is a ValueError naming the path — never a silent
 default and never a bare FileNotFoundError escaping the seam.
 
 The fire-gate minimums are security-relevant (T-04-01): threshold and
-fire_frac must lie in (0.0, 1.0] and window/stride/max_frames must be ints
->= 1, so config can never disable the fire gate or the cooldown by setting a
-degenerate value.
+fire_frac must lie in (0.0, 1.0] — as must alpha (WR-02: alpha 0 would
+freeze the EMA at the first frame and mislabel fired signals) — and
+window/stride/max_frames must be ints >= 1, so config can never disable the
+fire gate or the cooldown by setting a degenerate value.
 """
 
 from pathlib import Path
@@ -115,16 +116,22 @@ def load_inference_config(path=None) -> dict:
                 f", got {value!r} (fail-closed, no silent default)"
             )
 
+    # WR-02: alpha joins the T-04-01 (0.0, 1.0] minimums — 0 makes the EMA
+    # recurrence s_t = s_{t-1}: the smoothed vector freezes at the FIRST
+    # frame's probabilities forever, so the gate then fires a stale frozen
+    # class (or 0.0 confidence off the frozen all-zero entries). Same
+    # config-can-never-disable-the-gate posture: rejected, not clamped.
     value = cfg["alpha"]
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
-        or not 0.0 <= float(value) <= 1.0
+        or not 0.0 < float(value) <= 1.0
     ):
         raise ValueError(
-            f"configs/inference.yaml: alpha must be a number in [0.0, 1.0], "
-            f"got {value!r} — fix the config or INFERENCE_DEFAULTS "
-            "(fail-closed, no silent default)"
+            f"configs/inference.yaml: alpha must be a number in (0.0, 1.0] "
+            f"— 0 would freeze the EMA at the first frame and mislabel "
+            f"fired signals (T-04-01 posture), got {value!r} (fail-closed, "
+            "no silent default)"
         )
 
     for key in ("cooldown_seconds", "fps_fallback"):

@@ -8,7 +8,8 @@ Pinned contracts, one test each:
    and the enum is case-sensitive.
 3. Fire-gate bypass prohibition (T-04-01): threshold/fire_frac must lie in
    (0.0, 1.0] — 0 or negative cannot disable the gate.
-4. Domain rejects: alpha in [0, 1]; cooldown_seconds/fps_fallback > 0;
+4. Domain rejects: alpha in (0.0, 1.0] (WR-02: 0 would freeze the EMA);
+   cooldown_seconds/fps_fallback > 0;
    window/stride/max_frames ints >= 1 (bool is not an int); device
    non-empty — every reject names the offending key.
 5. Missing config file -> ValueError naming the path (never a bare
@@ -86,6 +87,7 @@ def test_fire_gate_bypass_prohibited(tmp_path, key, value):
     "key,value",
     [
         ("alpha", 1.5),
+        ("alpha", 0.0),
         ("cooldown_seconds", 0),
         ("window", 0),
         ("stride", 0),
@@ -97,6 +99,23 @@ def test_domain_rejects_name_the_key(tmp_path, key, value):
     p = _write_yaml(tmp_path, "domain.yaml", f"params:\n  {key}: {value}\n")
     with pytest.raises(ValueError, match=key):
         load_inference_config(p)
+
+
+@pytest.mark.parametrize("value", [0.0, 0])
+def test_alpha_zero_frozen_ema_rejected_t0401_posture(tmp_path, value):
+    # WR-02: alpha 0 makes the EMA recurrence s_t = s_{t-1} — the smoothed
+    # vector freezes at the FIRST frame and the gate then fires a stale
+    # frozen class (or 0.0 confidence) forever, defeating the locked gate
+    # semantics via a config value (the exact hazard class T-04-01 closes).
+    # Same posture as threshold/fire_frac: rejected, not clamped, naming
+    # the key + observed value and the freeze rationale.
+    p = _write_yaml(tmp_path, "alpha0.yaml", f"params:\n  alpha: {value}\n")
+    with pytest.raises(ValueError) as exc:
+        load_inference_config(p)
+    assert "alpha" in str(exc.value)
+    assert "(0.0, 1.0]" in str(exc.value)
+    assert "freeze the EMA" in str(exc.value)
+    assert repr(value) in str(exc.value)
 
 
 def test_empty_device_rejected(tmp_path):

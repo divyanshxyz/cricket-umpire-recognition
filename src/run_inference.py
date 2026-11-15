@@ -1,11 +1,11 @@
 """Phase 4 CLI: headless inference over an uploaded .mp4 or a single image.
 
-Contract (04-02-PLAN Task 2): a thin controller over
+Contract (04-02-PLAN Task 2, FUSE-04): a thin controller over
 src/inference/analyzer.py — fail-closed flags, a startup integrity sweep
-over ALL 5 digests from configs/model_digests.yaml (verify_artifact_sha256
-BEFORE anything else; a --dry-run census does config + digest validation +
-artifact existence only: no torch import, no model import, no inference,
-matching the train_ablation dry-run convention), and a deterministic
+over ALL 6 digests from configs/model_digests.yaml (including multimodal_fusion;
+verify_artifact_sha256 BEFORE anything else; a --dry-run census does config +
+digest validation + artifact existence only: no torch import, no model import,
+no inference, matching the train_ablation dry-run convention), and a deterministic
 timestamp-free summary carrying the [MM:SS] event log + the final
 law-correct scoreboard line.
 
@@ -216,9 +216,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="run_inference",
         description=(
-            "Phase 4 inference runner: analyze an uploaded .mp4 (stride-2 "
+            "Phase 4 / Phase 6 inference runner: analyze an uploaded .mp4 (stride-2 "
             "pose -> stabilizer -> law-correct scoreboard) or classify a "
-            "single image, with a startup integrity sweep over all 5 model "
+            "single image, with a startup integrity sweep over all model "
             "digests and a deterministic timestamp-free run summary."
         ),
     )

@@ -357,3 +357,22 @@ def test_temporal_summary_renders_untrained_marker(
     assert ri.main(["--video", fixture, "--config", str(cfg_path)]) == 0
     second = capsys.readouterr().out
     assert first == second, "temporal summaries must be byte-identical across re-runs"
+
+
+@pytest.mark.skipif(
+    not (_WEIGHTS_OK and FIXTURE_IMAGE.exists()),
+    reason="phase weights / untracked fixture image not present (fresh clone posture)",
+)
+def test_multimodal_image_cli_summary(tmp_path, capsys):
+    """FUSE-04: CLI image classification with model: multimodal renders
+    clean image summary with all 6 classes."""
+    cfg_path = tmp_path / "inference_multimodal.yaml"
+    cfg_path.write_text("params:\n  model: multimodal\n", encoding="utf-8")
+    assert ri.main(["--image", str(FIXTURE_IMAGE), "--config", str(cfg_path)]) == 0
+    out = capsys.readouterr().out
+    assert "=== run_inference image summary ===" in out
+    assert "model_mode: multimodal" in out
+    assert "predicted_class:" in out
+    for cls in ("Four", "NoAction", "NoBall", "Out", "Six", "Wide"):
+        assert f"{cls}:" in out
+
